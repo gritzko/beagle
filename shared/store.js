@@ -32,9 +32,9 @@
 //  (val>>4)&0xfffff`; `file_id` is the numeric `NNNNNNNNNN.keeper` id,
 //  mapped to a `packs()` index.  The pack at that index is seeked +
 //  resolved on demand (`getObject`/`readRecord` unchanged).
-//  FALLBACK (no `.keeper.idx` run in the shard): build the in-RAM index
+//  FALLBACK (no `.keeper.idx` run in the shard): build the memidx index
 //  ONCE — `git.pack.mmap` each `<shard>/NNNNN.keeper` and `pack.scan` it
-//  into one `abc.index` wh128 lane keyed by the same `hashlet60<<4|type`
+//  into one wh128 memidx keyed by the same `hashlet60<<4|type`
 //  WHIFFKeyPack; that path's `val` is `fileIdx<<40 | offset` (NOT the
 //  on-disk layout).  Both decode in `locate()` under one `onDisk` flag.
 
@@ -45,7 +45,8 @@ const safeRel = pathlib.safeRel;             // JS-065: worktree-confinement gua
 const shalib = require("./util/sha.js");
 const ulog = require("./ulog.js");
 const branchlib = require("./branch.js");    // SUBS-050: the ONE branch codec
-const idxmaint = require("./idxmaint.js");   // JS-116: keeper.idx run lifecycle
+const ingest = require("./ingest.js");       // DOG-027: the keeper.idx family
+const memidx = require("./memidx.js");       // DOG-027: the in-RAM fallback index
 const stats = require("./util/stats.js");    // CFOLD-001: env-gated read counters
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
@@ -158,6 +159,12 @@ function shardDir(storePath, project) {
   return found || (project ? join(beDir, project) : beDir);
 }
 
+//  DOG-027: readers holding an OPEN index register here; the session loop
+//  closes them at the dispatch boundary — an index is open only for the
+//  duration of use (the render), never across verbs of a resident session.
+const LIVE = [];
+function closeAll() { while (LIVE.length) { try { LIVE.pop().close(); } catch (e) {} } }
+
 function open(storePath, project) {
   const shard = shardDir(storePath, project);
 
@@ -211,20 +218,21 @@ function open(storePath, project) {
 
   //  JS-056: open the on-disk keeper.idx LSM runs (mmap, no scan).  Returns
   //  the abc.index (newest-wins across runs) when the shard HAS at least one
-  //  `.keeper.idx` run, else null so locate() falls back to the in-RAM build.
-  //  Memoized; `false` is the "no run, don't retry" sentinel.
+  //  usable `.keeper.idx` run, else null so locate() falls back to the in-RAM
+  //  build.  Memoized; `false` is the "no run, don't retry" sentinel.
+  //  DOG-027: the marker audit, the tail rebuild and the whole run lifecycle
+  //  are the keeper family's (ingest.openIndex) — the ladder is C's.  This
+  //  sits under EVERY read verb, so openIndex NEVER throws: a read-only /
+  //  EROFS / over-deep store degrades to null and the in-RAM fallback.
   let diskIx = undefined;
   function diskIndex() {
     if (diskIx !== undefined) return diskIx || null;
-    //  JS-116: run-lifecycle maintenance before the open — batch an overfull
-    //  stack, persist stale tail runs, compact >32; RO stores degrade as-is.
-    let n;
-    try { n = idxmaint.maintain(shard); }
-    catch (e) { n = idxmaint.listRuns(shard).length; }
-    //  JS-116: still past the native 64-run query cap (RO + overfull) — the
-    //  in-RAM fallback keeps the read verb alive where range() would throw.
-    diskIx = (n > 0 && n <= idxmaint.RUN_CAP)
-           ? abc.index("wh128", { dir: shard, ext: "keeper.idx" }) : false;
+    let ix = null;
+    try { ix = ingest.openIndex(shard); } catch (e) { ix = null; }
+    diskIx = ix || false;
+    //  register on ACQUIRE (again after a close self-heal), so the dispatch
+    //  sweep always covers every reader actually holding a pup slot.
+    if (ix && LIVE.indexOf(reader) < 0) LIVE.push(reader);
     return diskIx || null;
   }
 
@@ -235,7 +243,7 @@ function open(storePath, project) {
   let idx = null;
   function index() {
     if (idx) return idx;
-    const ix = abc.index("wh128", { mem: 1 << 16 });
+    const ix = memidx.open(1 << 16);   // DOG-027: no `{mem}` lane any more
     const list = packs();
     for (let fi = 0; fi < list.length; fi++) {
       const pk = packAt(fi);
@@ -265,8 +273,7 @@ function open(storePath, project) {
         indexPackByWalk(pk, fhi, ix, -1);   // thin-pack fallback (see above)
       }
     }
-    ix.flush();
-    idx = ix;
+    idx = ix;                          // DOG-027: memidx sorts on first range()
     return ix;
   }
 
@@ -289,6 +296,8 @@ function open(storePath, project) {
     ix.range(lo, hi + 1n, function (kv) {
       const key = kv[0], val = kv[1];
       const type = Number(key & 0xfn);
+      //  DOG-027: 0xF is the family MARKER (a PACK bookmark), never an object.
+      if (type === 0xf) return true;
       let fileIdx, offset;
       if (onDisk) {
         //  on-disk wh64Pack: offset = val>>24, file_id = (val>>4)&0xfffff.
@@ -342,6 +351,7 @@ function open(storePath, project) {
     ix.range(lo, hi + 1n, function (kv) {
       if (ambiguous) return false;
       const key = kv[0], val = kv[1];
+      if ((key & 0xfn) === 0xfn) return true;   // DOG-027: a marker row, not an object
       let fileIdx, offset;
       if (onDisk) {
         offset = Number(val >> 24n);
@@ -592,6 +602,15 @@ function open(storePath, project) {
     //  prefix resolve over the wh128 lane; ambiguous/miss → undefined.
     resolveHexAny: resolveHexAny,
 
+    //  DOG-027: release the keeper.idx pup slot (jab's handle table holds 32);
+    //  fan-out verbs (work) close every store they open.  Reads re-probe after.
+    close: function () {
+      if (diskIx) { try { diskIx.close(); } catch (e) {} }
+      diskIx = undefined;
+      const i = LIVE.indexOf(reader);
+      if (i >= 0) LIVE.splice(i, 1);
+    },
+
     //  expose for tests / verification
     _locate: locate,
     _index: index,
@@ -700,7 +719,7 @@ function ensureShard(shard) {
   if (!exists(path)) createShard(shard);
 }
 
-module.exports = { open: open, shardDir: shardDir, frameSha: frameSha,
+module.exports = { open: open, closeAll: closeAll, shardDir: shardDir, frameSha: frameSha,
                    hashlet60FromBytes: hashlet60FromBytes,
                    TYPE_NAME: TYPE_NAME, NAME_TYPE: NAME_TYPE,
                    createShard: createShard, set: set, tombstone: tombstone,

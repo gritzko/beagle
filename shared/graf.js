@@ -7,23 +7,32 @@
 //  merge/root/unreadable chain end runs a two-tip paint BFS stopped at the
 //  common-ancestor CUT.  Counts SATURATE at 0xFFFFF ("at least") and saturated
 //  pairs ARE cached; a truncated walk (missing object / cap) is NEVER cached.
-//  New pairs go to a mem wh128 index and persist as a fresh ron60 run via
-//  idxmaint (EXT-parameterized) under the native `.lock.graf` flock; on a
-//  read-only store persistence degrades to the mem-only cache (idxmaint norm).
+//  New pairs go to a memidx wh128 cache and persist through the family's
+//  `abc.index` handle under the native `.lock.graf` flock (DOG-027: the run
+//  naming, sealing and the 1/8 ladder are C's); on a read-only store
+//  persistence degrades to the mem-only cache.
 
 "use strict";
 
-const idxmaint = require("./idxmaint.js");
+const memidx = require("./memidx.js");
 const identEpoch = require("./dag.js").identEpoch;
 const shalib = require("./util/sha.js");
 const join = require("./util/path.js").join;
 const isFullSha = shalib.isFullSha;
 
-const EXT = "graf.idx";        // join the native graf run family (10-RON64 names)
+const EXT = ".graf.idx";       // join the native graf run family (10-RON64 names)
 const LOCK = ".lock.graf";     // native graf's shard write lock (flock)
 //  GRAF-001 pair-record type nibbles: key half 0xA, val half 0xB — disjoint
 //  from native graf DAG_T_* 1..5 (and keeper's 1..4 / 0xF PACK family).
 const T_A = 0xan, T_B = 0xbn;
+//  DOG-027 MARKER: nibble 0xC on a zero hash — disjoint from this family's own
+//  0xA/0xB pair halves and from native graf's DAG_T_* 1..5, so it can only be
+//  a marker.  It sorts FIRST (every real pair row carries a 40-bit hash above
+//  it) and `scanRange`'s nibble filter already keeps it out of every answer.
+const MARK_K = 0xcn, MARK_V = 0xcn;
+//  DOG-027: rows put between two commits must fit ONE 4 KB memtable page (256
+//  wh128 rows), else a page-full auto-seal lands a run with no marker in it.
+const BATCH = 200;
 const SAT = 0xfffff;           // the 20-bit count saturation cap ("at least")
 const WALK_CAP = 1 << 16;      // walk bound, mirrors dag.js (cap hit = truncated)
 const MEM_SLOTS = 1 << 14;     // memtable capacity (pairs)
@@ -41,21 +50,39 @@ function open(shard, opts) {
   let satCap = Number(opts.satCap) || SAT;
   if (satCap > SAT || satCap < 1) satCap = SAT;
 
-  let memIx = abc.index("wh128", { mem: MEM_SLOTS });
+  let memIx = memidx.open(MEM_SLOTS);
   let memPairs = 0;
   let roDegraded = false;      // a failed persist: stay a mem-only cache
   let diskIx;                  // undefined = not probed; null = no runs
   const stats = { walks: 0, hits: 0 };
 
+  //  DOG-027: open + audit the family's runs.  A run with no marker row is
+  //  incomplete (or a foreign writer's page): drop it.  Nothing is recomputed
+  //  eagerly — this index IS a cache, so a dropped run costs the next lookup
+  //  a walk and the walk re-caches the pair.
   function disk() {
     if (diskIx === undefined) {
       diskIx = null;
-      if (idxmaint.listRuns(shard, EXT).length) {
-        try { diskIx = abc.index("wh128", { dir: shard, ext: EXT }); }
-        catch (e) { warn(e); diskIx = null; }
-      }
+      //  DOG-027: abc.index io.mkdir()s its dir — never conjure a shard.
+      try { if (io.stat(shard).kind !== "dir") return diskIx; } catch (e) { return diskIx; }
+      let ix = null;
+      try { ix = abc.index("wh128", { dir: shard, ext: EXT }); }
+      catch (e) { warn(e); return diskIx; }
+      try {
+        for (let i = ix.count - 1; i >= 0; i--)
+          if (!marked(ix.run(i))) ix.drop(i);
+      } catch (e) { warn(e); }        // read-only store: read what is there
+      if (ix.count) diskIx = ix;
+      else try { ix.close(); } catch (e) {}
     }
     return diskIx;
+  }
+
+  //  The marker sorts first, so only the leading keys <= MARK_K can be it.
+  function marked(run) {
+    for (let i = 0; i * 2 < run.length && run[i * 2] <= MARK_K; i++)
+      if (run[i * 2] === MARK_K) return true;
+    return false;
   }
 
   //  Seek the contiguous span [hA<<24,(hA+1)<<24) and match B in the val's
@@ -96,35 +123,39 @@ function open(shard, opts) {
     if (memPairs >= MEM_FLUSH && !roDegraded) flush();
   }
 
-  //  Persist the memtable as ONE fresh ron60 run + fold the ladder, under the
-  //  native `.lock.graf` flock.  Best-effort: failure keeps the mem cache.
+  //  Persist the memtable through the family's index handle, under the native
+  //  `.lock.graf` flock.  DOG-027: the marker row rides every commit, so each
+  //  sealed run carries one; naming/sealing/laddering is C's.  Best-effort:
+  //  failure keeps the mem cache.
   function flush() {
     if (!memPairs) return;
     const rows = [];
     memIx.range(0n, 0xffffffffffffffffn,
                 function (kv) { rows.push(kv[0], kv[1]); return true; });
     if (!rows.length) return;
-    let fd = -1;
+    let fd = -1, ix = null;
     try {
       fd = io.open(join(shard, LOCK), "c");
       io.lock(fd, true);
-      const ram = abc.ram("HEAPwh128", rows.length / 2 + 1);
-      for (let i = 0; i < rows.length; i += 2) ram.push(rows[i], rows[i + 1]);
-      ram.sort();
-      idxmaint.landRun(shard, rows.length / 2, function (book) {
-        abc.merge([ram], book);
-        return book.buffer.watermark | 0;
-      }, EXT);
-      idxmaint.compactAfterAdd(shard, EXT);
+      ix = abc.index("wh128", { dir: shard, ext: EXT });
+      let n = 0;
+      for (let i = 0; i < rows.length; i += 2) {
+        ix.put(rows[i], rows[i + 1]);
+        if (++n >= BATCH) { ix.put(MARK_K, MARK_V); ix.commit(); n = 0; }
+      }
+      ix.put(MARK_K, MARK_V);
+      ix.commit();
     } catch (e) { warn(e); roDegraded = true; return; }
     finally {
+      if (ix) try { ix.close(); } catch (e) {}
       if (fd >= 0) {
         try { io.unlock(fd); } catch (e) {}
         try { io.close(fd); } catch (e) {}
       }
     }
-    memIx = abc.index("wh128", { mem: MEM_SLOTS });
+    memIx = memidx.open(MEM_SLOTS);
     memPairs = 0;
+    if (diskIx) try { diskIx.close(); } catch (e) {}
     diskIx = undefined;                        // re-probe: see the fresh run
   }
 
@@ -283,7 +314,14 @@ function open(shard, opts) {
     return { ahead: a, behind: b };
   }
 
-  return { aheadBehind: aheadBehind, flush: flush, stats: stats };
+  //  DOG-027: release the disk run's pup slot (jab's handle table holds 32);
+  //  mem pairs just drop — the cache refills on the next walk, as ever.
+  function close() {
+    if (diskIx) { try { diskIx.close(); } catch (e) {} }
+    diskIx = undefined;
+  }
+
+  return { aheadBehind: aheadBehind, flush: flush, stats: stats, close: close };
 }
 
 module.exports = { open: open, EXT: EXT };

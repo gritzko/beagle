@@ -67,7 +67,7 @@ function relate(keeper, remoteUri, branch, tip, hasQuery, remoteIx, adv) {
 }
 
 //  GIT-016 (pull side): the FULL verdict of local `cur` vs remote `tip`, with
-//  the remote commits present in `remoteIx` (an abc.index("wh128",{mem}) of
+//  the remote commits present in `remoteIx` (a shared/memidx.js wh128 cache of
 //  commit->parent edges).  Derived from dag.aheadBehind + dag.isAncestor:
 //    eq         cur === tip
 //    ahead      cur descends tip (tip is an ancestor of cur) — get can FF back,

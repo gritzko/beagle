@@ -20,7 +20,6 @@
 
 const join = require("./util/path.js").join;   // JSQUE-016: path.js -> shared/util/
 const ulog = require("./ulog.js");
-const idxmaint = require("./idxmaint.js");     // JS-116: run-lifecycle upkeep
 const shalib = require("./util/sha.js");       // JS-117: tail-walk git-sha
 
 //  JS-117: tail-append cap ([/wiki/PackLog] many packs per log) — a new log
@@ -188,6 +187,141 @@ function verifyAndPlace(src, logPath) {
   try { io.resize(fd, src.packLen - 20); } finally { io.close(fd); }
 }
 
+//  --- the keeper.idx index FAMILY (DOG-027) -----------------------------
+//  `abc.index("wh128", {dir: shard, ext: ".keeper.idx"})` is a handle on the
+//  shard's dog Pup stack: the runs, their names, the memtable, the 1/8 ladder
+//  and every flush live in C.  What stays here is what only keeper knows —
+//  which rows go in, the MARKER row that says a run is complete, and the
+//  coverage probe + tail rebuild that shared/idxmaint.js used to hold.
+const IDX_EXT = ".keeper.idx";
+
+//  DOG-027: the family MARKER is keeper's own 0xF PACK bookmark row (keeper/
+//  KEEP.h) — an object row's low nibble is a git type 1..4, never 0xF.
+const MARK_LO = 12n << 24n;      // ((first_off=12 << 20 | fid) << 4): the first
+const MARK_HI = 1n << 56n;       // possible bookmark key; past the last one.
+
+//  DOG-027: rows put between two commits must fit ONE 4 KB memtable page (256
+//  wh128 rows), else a page-full auto-seal lands a run with no marker in it.
+const IDX_BATCH = 200;
+
+function warn(e) { try { io.log("keeper.idx: " + e + "\n"); } catch (x) {} }
+
+//  Does this run carry a bookmark?  The rows are sorted, so binary-search the
+//  bookmark window and walk it — an object key is uniform over 64 bits, so
+//  only a handful of them ever sort below MARK_HI.
+function hasMarker(run) {
+  let lo = 0, hi = run.length >> 1;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (run[m * 2] < MARK_LO) lo = m + 1; else hi = m;
+  }
+  for (let i = lo; i * 2 < run.length && run[i * 2] < MARK_HI; i++)
+    if ((run[i * 2] & 0xfn) === 0xfn) return true;
+  return false;
+}
+
+//  DOG-027: a batching writer over the family's index handle.  `mark(k, v)`
+//  pins the bookmark row for the rows that follow; every seal writes it right
+//  before commit(), so EVERY committed run carries one.
+function idxWriter(shard) {
+  const ix = abc.index("wh128", { dir: shard, ext: IDX_EXT });
+  let n = 0, mk = null, mv = 0n;
+  return {
+    mark: function (k, v) { mk = k; mv = v; },
+    put: function (k, v) { ix.put(k, v); if (++n >= IDX_BATCH) this.seal(); },
+    seal: function () {
+      if (mk === null) return;                 // nothing to mark: nothing to seal
+      ix.put(mk, mv); ix.commit(); n = 0;
+    },
+    close: function () { try { ix.close(); } catch (e) {} }
+  };
+}
+
+//  Per-log coverage from the 0xF PACK bookmark rows: key = ((first_off<<20 |
+//  file_id) << 4) | 0xF, val = count<<32 | logBytes-12 (buildIndex / KEEP.h).
+//  Returns { fid: coveredLogBytes-12 } over the whole stack (newest-wins is
+//  the handle's job now — this is one merged range, not a per-run walk).
+function coverage(ix) {
+  const hi = ((((BigInt(KEEP_LOG_MAX) << 20n) | 0xfffffn) << 4n) | 0xfn) + 1n;
+  const end = {};                                         // fid -> covered end
+  //  JS-117: tail-appended packs bookmark at first_off>12 (< KEEP_LOG_MAX, the
+  //  append cap); covered = the CONTIGUOUS bookmark chain from 12 (a hole =
+  //  unindexed pack = uncovered, even if a later tail bookmark exists).
+  ix.range(MARK_LO, hi, function (kv) {
+    if ((kv[0] & 0xfn) !== 0xfn) return true;             // not a PACK row
+    const fid = Number((kv[0] >> 4n) & 0xfffffn);
+    const first = Number(kv[0] >> 24n);
+    const ext = Number(kv[1] & 0xffffffffn);
+    const e = end[fid] === undefined ? 12 : end[fid];     // keys ascend by first
+    if (first <= e && first + ext > e) end[fid] = first + ext;
+    else if (end[fid] === undefined) end[fid] = 12;       // hole: chain stops
+    return true;
+  });
+  const cov = {};
+  for (const k in end) cov[k] = end[k] - 12;              // covered log bytes-12
+  return cov;
+}
+
+//  The shard's `NNNNNNNNNN.keeper` logs with io.stat sizes, fid-sorted.
+function listLogs(shard) {
+  const out = [];
+  try {
+    for (const nm of io.readdir(shard)) {
+      if (!/^\d{10}\.keeper$/.test(nm)) continue;
+      let sz;
+      try { sz = io.stat(join(shard, nm)).size; } catch (e) { continue; }
+      out.push({ nm: nm, fid: parseInt(nm, 10), size: sz });
+    }
+  } catch (e) {}
+  out.sort(function (a, b) { return a.fid - b.fid; });
+  return out;
+}
+
+//  openIndex(shard) -> the audited keeper.idx handle, or null when the shard
+//  carries no usable run (store.js then keeps its in-RAM scan-build).  Steps:
+//   1. open the Pup stack (a stack past the 64-run cap refuses, in plain words);
+//   2. MARKER AUDIT — drop every run with no PACK bookmark (incomplete, or a
+//      foreign writer's page), youngest index first so a drop never shifts a
+//      run still to be visited;
+//   3. rebuild any log the survivors do not cover, and any log at all when the
+//      audit dropped something.  A VIRGIN stack (no runs, nothing dropped) is
+//      left alone: an unindexed shard is store.js's in-RAM fallback, not ours.
+//  Best-effort throughout — a read-only / EROFS store degrades to whatever
+//  runs are already there, because every read verb goes through here.
+function openIndex(shard) {
+  //  DOG-027: abc.index io.mkdir()s its dir — never CONJURE a shard.  store.js
+  //  probes candidate project shards that may not exist, and an empty dir
+  //  planted beside a project-less store hijacks its auto-detect.
+  try { if (io.stat(shard).kind !== "dir") return null; } catch (e) { return null; }
+  let ix;
+  try { ix = abc.index("wh128", { dir: shard, ext: IDX_EXT }); }
+  catch (e) { warn(e); return null; }
+  let dropped = false;
+  try {
+    for (let i = ix.count - 1; i >= 0; i--)
+      if (!hasMarker(ix.run(i))) { ix.drop(i); dropped = true; }
+  } catch (e) { warn(e); }                     // read-only store: leave as-is
+  let built = false;
+  try {
+    if (dropped || ix.count) {
+      const cov = dropped ? {} : coverage(ix);
+      for (const lg of listLogs(shard)) {
+        if (cov[lg.fid] !== undefined && cov[lg.fid] >= lg.size - 12) continue;
+        try { buildIndex(shard, lg.nm, lg.fid); built = true; }
+        catch (e) { warn(e); }                 // thin/odd log or RO store: skip
+      }
+    }
+  } catch (e) { warn(e); }
+  if (built) {                                 // the rebuild wrote through its
+    try { ix.close(); } catch (e) {}           // own handle: re-scan the dir
+    try { ix = abc.index("wh128", { dir: shard, ext: IDX_EXT }); }
+    catch (e) { warn(e); return null; }
+  }
+  if (ix.count) return ix;
+  try { ix.close(); } catch (e) {}
+  return null;
+}
+
 //  Build the native `<ron64>.keeper.idx` for one keeper-log: a sorted wh128
 //  run of a PACK-summary entry + one entry per object.  Native keeper reads
 //  this prebuilt index (it does NOT scan a bare `.keeper`), so a clone is
@@ -214,7 +348,7 @@ function buildIndex(shard, logName, fileId) {
   //  throw its generic "scan (out full? corrupt?)".  The log is durable
   //  data: fall back to the extent-walk census and index every record that
   //  still resolves.  The run bookmarks the FULL byte extent either way, so
-  //  idxmaint stops re-attempting (and re-warning) on every open; the lost
+  //  openIndex stops re-attempting (and re-warning) on every open; the lost
   //  records stay miss until a re-fetch lands them again.
   let ents = null, tail;
   try { ents = pk.scan(io.buf(cnt * 16 + 256)); }   // key,val,... (val = offset)
@@ -235,23 +369,21 @@ function buildIndex(shard, logName, fileId) {
     }
     tail = walkTail(pk, maxOff);
   }
-  const mem = abc.ram("HEAPwh128", n + tail.length + 8);
+  //  DOG-027: rows go through the family's index handle — C sorts, names,
+  //  seals and ladders them; the PACK bookmark rides every commit as the marker.
   const fid = BigInt(fileId), FIRST = 12n, PACK = 0xfn;
-  mem.push((((FIRST << 20n) | fid) << 4n) | PACK,
+  const w = idxWriter(shard);
+  try {
+    w.mark((((FIRST << 20n) | fid) << 4n) | PACK,
            (BigInt(n + tail.length) << 32n) | (BigInt(pk.byteLength) - 12n));
-  for (let i = 0; i < n; i++) {
-    const off = ents[i * 2 + 1] & 0xffffffffffn;
-    mem.push(ents[i * 2], (off << 24n) | (fid << 4n) | 1n);
-  }
-  for (const t of tail)
-    mem.push(t.key, (BigInt(t.off) << 24n) | (fid << 4n) | 1n);
-  mem.sort();
-  //  JS-116: collision-safe ron60 name — a pinned clock repeats ron.now(),
-  //  and overwriting an existing run silently drops its coverage.
-  const path = join(shard, idxmaint.freshRunName(shard));
-  const out = abc.book("HEAPwh128", path, mem.size);
-  abc.merge([mem], out);
-  abc.close(out);
+    for (let i = 0; i < n; i++) {
+      const off = ents[i * 2 + 1] & 0xffffffffffn;
+      w.put(ents[i * 2], (off << 24n) | (fid << 4n) | 1n);
+    }
+    for (const t of tail)
+      w.put(t.key, (BigInt(t.off) << 24n) | (fid << 4n) | 1n);
+    w.seal();
+  } finally { w.close(); }
 }
 
 //  JS-117: append pack RECORDS at the log tail — grow the file, copy the bytes
@@ -289,21 +421,19 @@ function indexAppended(shard, fileId, firstOff, pk, recLen) {
     if (o > maxOff) maxOff = o;
   }
   const tail = walkTail(pk, maxOff);
-  const mem = abc.ram("HEAPwh128", n + tail.length + 8);
   const fid = BigInt(fileId), PACK = 0xfn, delta = BigInt(firstOff) - 12n;
-  mem.push((((BigInt(firstOff) << 20n) | fid) << 4n) | PACK,
+  const w = idxWriter(shard);                      // DOG-027: C names + seals
+  try {
+    w.mark((((BigInt(firstOff) << 20n) | fid) << 4n) | PACK,
            (BigInt(n + tail.length) << 32n) | BigInt(recLen));
-  for (let i = 0; i < n; i++) {
-    const off = (ents[i * 2 + 1] & 0xffffffffffn) + delta;
-    mem.push(ents[i * 2], (off << 24n) | (fid << 4n) | 1n);
-  }
-  for (const t of tail)
-    mem.push(t.key, ((BigInt(t.off) + delta) << 24n) | (fid << 4n) | 1n);
-  mem.sort();
-  const path = join(shard, idxmaint.freshRunName(shard));   // JS-116: no clobber
-  const out = abc.book("HEAPwh128", path, mem.size);
-  abc.merge([mem], out);
-  abc.close(out);
+    for (let i = 0; i < n; i++) {
+      const off = (ents[i * 2 + 1] & 0xffffffffffn) + delta;
+      w.put(ents[i * 2], (off << 24n) | (fid << 4n) | 1n);
+    }
+    for (const t of tail)
+      w.put(t.key, ((BigInt(t.off) + delta) << 24n) | (fid << 4n) | 1n);
+    w.seal();
+  } finally { w.close(); }
 }
 
 //  JS-117: pick the log to write.  The highest-numbered .keeper under the
@@ -339,7 +469,6 @@ function reindexShard(shard) {
   } catch (e) {}
   logs.sort();
   const scans = [];
-  let total = 0;
   for (const nm of logs) {
     //  GET-044: skip a log past the 31-bit mmap cap (native abort otherwise).
     let lsz = 0; try { lsz = io.stat(join(shard, nm)).size; } catch (e) {}
@@ -350,25 +479,22 @@ function reindexShard(shard) {
     let ents; try { ents = pk.scan(buf); } catch (e) { ents = null; }
     if (!ents) continue;                 // thin/odd log — reader walk-fallback
     scans.push({ nm: nm, pk: pk, ents: ents });
-    total += ents.length / 2 + 1;
   }
   if (!scans.length) return;
-  const mem = abc.ram("HEAPwh128", total + 8);
   const FIRST = 12n, PACK = 0xfn;
-  for (const s of scans) {
-    const fid = BigInt(fileIdOf(s.nm));
-    mem.push((((FIRST << 20n) | fid) << 4n) | PACK,
+  const w = idxWriter(shard);          // DOG-027: one bookmark marker per log
+  try {
+    for (const s of scans) {
+      const fid = BigInt(fileIdOf(s.nm));
+      w.mark((((FIRST << 20n) | fid) << 4n) | PACK,
              (BigInt(s.ents.length / 2) << 32n) | (BigInt(s.pk.byteLength) - 12n));
-    for (let i = 0; i * 2 < s.ents.length; i++) {
-      const off = s.ents[i * 2 + 1] & 0xffffffffffn;
-      mem.push(s.ents[i * 2], (off << 24n) | (fid << 4n) | 1n);
+      for (let i = 0; i * 2 < s.ents.length; i++) {
+        const off = s.ents[i * 2 + 1] & 0xffffffffffn;
+        w.put(s.ents[i * 2], (off << 24n) | (fid << 4n) | 1n);
+      }
+      w.seal();                        // this log's bookmark lands before the next
     }
-  }
-  mem.sort();
-  const path = join(shard, idxmaint.freshRunName(shard));   // JS-116: no clobber
-  const out = abc.book("HEAPwh128", path, mem.size);
-  abc.merge([mem], out);
-  abc.close(out);
+  } finally { w.close(); }
 }
 
 function clone(pack, beDir, proj, tip, remoteUri) {
@@ -451,7 +577,7 @@ function land(pack, shard) {
     indexAppended(shard, tgt.fileId, firstOff, view, records.length);
     if (tmpFile) try { io.unlink(tmpFile); } catch (e) {}
   }
-  idxmaint.compactAfterAdd(shard);   // JS-116: restore the 1/8 run ladder
+  //  DOG-027: no ladder call here — every seal ends in the C ladder already.
 }
 
 //  add(): land another full pack into an EXISTING shard as the next-numbered
@@ -486,4 +612,6 @@ function saveRemoteRef(shard, remoteUri, tip) {
 module.exports = { clone, add, land, reindexShard, buildIndex, writeBytes,
                    packLogBytes, logName, fileIdOf, saveRemoteRef, repackLogId,
                    KEEP_LOG_MAX, MMAP_CAP, appendRecords, indexAppended,
-                   appendTarget };
+                   appendTarget,
+                   //  DOG-027: the keeper.idx family surface (idxmaint retired)
+                   openIndex, coverage, listLogs, hasMarker, IDX_EXT };

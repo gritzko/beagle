@@ -35,6 +35,7 @@ const uriarg   = require("../../shared/uri.js");             // URI-015: scp →
 const discover = require("../../core/discover.js");          // DIS-062: nav context
 const resolve_hash = require("../../core/resolve_hash.js").resolve_hash;   // DIS-062
 const shalib   = require("../../shared/util/sha.js");
+const memidx   = require("../../shared/memidx.js");          // DOG-027: in-RAM index
 const hunkrows = require("../../shared/hunkrows.js");
 const isFullSha = shalib.isFullSha;
 const hashlet60FromBytes = shalib.hashlet60FromBytes;
@@ -160,7 +161,7 @@ function peekFetch(k, uri, branch, curSha) {
 //  every commit put one edge per parent — REUSING git.parseCommit + the same
 //  WHIFFKeyPack key store.js/ingest.js use.  Non-commit records are skipped.
 function commitEdges(packBytes) {
-  const ix = abc.index("wh128", { mem: 1 << 16 });
+  const ix = memidx.open(1 << 16);          // DOG-027: the retired `{mem}` lane
   const log = ingest.packLogBytes(packBytes);        // strip the 20-byte trailer
   const pk = git.pack.over(log);
   pk.buffer.watermark = log.byteLength;
@@ -181,8 +182,7 @@ function commitEdges(packBytes) {
     for (const p of (pc.parents || []))
       if (isFullSha(p)) ix.put(keyFor(ch), h60(p));   // child -> parent edge
   }
-  ix.flush();
-  return ix;
+  return ix;                                // DOG-027: memidx sorts on range()
 }
 
 //  --- report ------------------------------------------------------------

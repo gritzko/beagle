@@ -34,7 +34,6 @@ const pathlib = require("../../shared/util/path.js");
 const wtpath = require("../../core/discover.js").wtpath;
 const shalib = require("../../shared/util/sha.js");
 const ingest = require("../../shared/ingest.js");
-const idxmaint = require("../../shared/idxmaint.js");   // JS-116
 const join = pathlib.join;   // BE-011: wtJoin confines wt-opens
 const frameSha = shalib.frameSha;
 
@@ -200,7 +199,7 @@ function writePack(shard, wtRoot, commitBody, rootTreeSha, treeBodies, decisions
     const firstOff = ingest.appendRecords(path, records);
     ingest.indexAppended(shard, tgt.fileId, firstOff, scr, recLen);
   }
-  idxmaint.compactAfterAdd(shard);   // JS-116: restore the 1/8 run ladder
+  //  DOG-027: no ladder call — every index seal ends in the C ladder already.
   return tgt.logName;
 }
 

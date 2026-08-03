@@ -316,12 +316,18 @@ function cli(argv, opts2) {
     require(_here + "/shared/serve.js").receivePack(argv[3] || "", 0, 1);
     return;
   }
+  //  DOG-027: an index is open for the duration of ONE dispatch — sweep the
+  //  previous dispatch's readers on entry and this one's when it ends.
+  const _closeIdx = function () {
+    try { require(_here + "/shared/store.js").closeAll(); } catch (e) {}
+  };
+  _closeIdx();
   //  JAB-004: a driveSpell re-entry overlays its ambient onto the shared `be`;
   //  snapshot the outer run's fields so the finally restores them (verbs read be.*).
   const beSaved = opts2.reentry ? _snapBe() : null;
   try {
   return _cli(argv, opts2);
-  } finally { if (beSaved) _restoreBe(beSaved); }
+  } finally { if (beSaved) _restoreBe(beSaved); _closeIdx(); }
 }
 
 //  JAB-004: snapshot/restore the `be` ambient (repo/sink/format/force/flags) —

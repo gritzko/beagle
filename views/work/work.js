@@ -169,7 +169,13 @@ function registry() {
     for (const s of b) if (!a.has(s)) behind++;
     return { ahead: ahead, behind: behind };
   }
-  return { keeperFor: keeperFor, meta: meta, counts: counts };
+  //  DOG-027: work opens one keeper + graf PER SHARD; jab's pup handle table
+  //  holds 32 slots, so the render must release every one when it is done.
+  function close() {
+    for (const k of keepers.values()) if (k) { try { k.close(); } catch (e) {} }
+    for (const g of grafs.values()) if (g) { try { g.close(); } catch (e) {} }
+  }
+  return { keeperFor: keeperFor, meta: meta, counts: counts, close: close };
 }
 
 //  --- the context tree (block 1's skeleton) -----------------------------------
@@ -742,6 +748,8 @@ function emitForest(sink, board, btns) {
   if (!root) miss("work/", "WORKNONE");
   const ix = indexNodes(root);
   const reg = registry();
+  try {
+
   const branchMap = new Map(), foreignMap = new Map();
 
   //  WORK-007 pass 1: a NODE per work/ wt (work wts are forest nodes too), read
@@ -779,6 +787,9 @@ function emitForest(sink, board, btns) {
     foreignRows(foreignMap, reg, rows3);
     emitRows(sink, rows3, btns);
   }
+
+  //  DOG-027: release every shard's pup slots even on a thrown miss.
+  } finally { reg.close(); }
 }
 
 //  --- the verb ----------------------------------------------------------------
