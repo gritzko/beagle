@@ -56,6 +56,8 @@
 //  grammar's own `T` (`Key:`) + `S` (value) token pair and each half carries
 //  its own spell — key → `Key:*`, value → `Key:value` — as context-less `O`
 //  spells, so the pager stays arg-blind and the VERB resolves the arg.
+//  TODO-008: a VALUE that lexes as a ticket id (`See: BE-050`) is a LINK — it
+//  navigates to `todo BE-050`, the key half keeps its presence filter.
 //  TIME-SORT (TODO-004): a FLAT filter result is freshest-first, dirty by mtime
 //  above committed by commit ts; the board and topic lists keep `Sev:` order.
 //
@@ -1273,6 +1275,9 @@ function pageLinks(board, selfKey, pageDirRel, body, toks, a) {
     if (metaidx.codeOf(p.key) === null) continue;  // not a registered pair shape
     us[p.ki] = mint(spellWith(a, p.key, "*"));
     if (p.vi >= toks.length) continue;
+    //  TODO-008: a ticket-shaped VALUE is a LINK, not a filter — it jumps.
+    const nav = navSpell(p.value);
+    if (nav) { us[p.vi] = mint(nav); continue; }
     const fv = filterVal(p.value);
     if (fv !== null) us[p.vi] = mint(spellWith(a, p.key, fv));
   }
@@ -1391,6 +1396,15 @@ function argLineWith(a, key, val) {
 //  the whole-arg-line click spell (BRO-025: never a `todo(key,value)` call).
 function spellWith(a, key, val) { return "todo " + argLineWith(a, key, val); }
 
+//  TODO-008: a rendered value that lexes as a TICKET ID (the grammar's own
+//  `key` class) clicks to that ticket's page — its LEXICAL class alone decides,
+//  so an unregistered key's ticket-shaped value navigates too, and a dangling
+//  code gets the `todo` verb's own miss line.  null = no jump, filter as before.
+function navSpell(raw) {
+  const t = String(raw == null ? "" : raw).trim();
+  return shape(t) === "key" ? "todo " + t : null;
+}
+
 //  A rendered value -> the filter ARG that matches it, or null when none does.
 //  Spaces and colons SEPARATE, so a spaced value rides its DESPACED index form
 //  (the index compares that form, so the filter still matches exactly); a value
@@ -1468,8 +1482,9 @@ function todoFilter(board, a, mode, sink) {
     for (const k of order) {
       const t = raw[k] !== undefined ? String(raw[k]).trim() : "";
       if (t === "") continue;
-      const fv = filterVal(t);
-      vals.push({ text: t, spell: fv === null ? null : spellWith(a, k, fv) });
+      //  TODO-008: an inline ticket-shaped value jumps too — same class test.
+      const nav = navSpell(t), fv = nav ? null : filterVal(t);
+      vals.push({ text: t, spell: nav || (fv === null ? null : spellWith(a, k, fv)) });
     }
     //  TODO-005: a filter row wears the same bullet — its `Sev:` colour, hollow
     //  when the line's own `Now:` reached a closed ticket.  No head scan here
