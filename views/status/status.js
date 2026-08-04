@@ -360,7 +360,13 @@ function paint(list, out, prefix, quad) {
       const nav = navlib.navLink(
             (wt === "v" || wt === "x" || wt === "!") ? "diff" : "cat", navPath);
       let act = null;
-      if (!g.staged && !g.con) {
+      //  DIS-080: a conflict is MARKERLESS — the woven bytes are the file, the
+      //  user edits them, and accepting what is there IS the resolution (a
+      //  `put <path>` row LATER than the `con` row acks it — wtlog.conflicts()).
+      //  `[okay]` is that acceptance in one click: the SAME `put` spell `[put]`
+      //  mints, on the one row the put/del branch below skips.
+      if (g.con) act = { label: "[okay]", tag: "Y", spell: "put " + navPath };
+      else if (!g.staged) {
         if (wt === "v" || wt === "o") act = { label: "[put]", tag: "Y", spell: "put " + navPath };
         else if (wt === "x")          act = { label: "[del]", tag: "X", spell: "delete " + navPath };
       }
