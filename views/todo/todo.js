@@ -1,16 +1,30 @@
 //  views/todo/todo.js — BE-038: the read-only ticket-board view.  `todo` shows
 //  the open-ticket board (topics + one-liner titles), `todo GET` one topic's
-//  list, `todo GET-001` the ticket page itself (thin `todo/GET/GET-001.mkd` or
-//  fat `todo/GET/GET-001/README.mkd`).  Args route by SHAPE (bare / TOPIC /
-//  TOPIC-123 — the `uc ucnum* "-" dgt+` key rule), never by path resolution;
-//  a miss is ONE uniform line + throw (BE-003 spirit): `todo: <arg>: TODONONE`.
+//  list, `todo Now:OPEN` a meta-pair filter listing.  Args route by SHAPE (bare
+//  / TOPIC / `Key:Value` — the `uc ucnum* "-" dgt+` key rule stays LEXICAL),
+//  never by path resolution; a miss is ONE uniform line + throw (BE-003
+//  spirit): `todo: <arg>: TODONONE`.
+//
+//  TODO-011 (ruling gritzko 2026-08-04): `todo` is the TABULAR side ONLY.  The
+//  ONE-TICKET PAGE moved out to its own view, `views/ticket/ticket.js` —
+//  `ticket GET-001` renders it.  A ticket-id arg here no longer serves a page:
+//  it refuses in plain words pointing at `ticket <KEY>` (pageRefusal below).
+//  The two views share ONE home for everything they both need — this file: the
+//  key/topic LEXER (shape/ticketKey/keyTopic), the board root (boardDir), the
+//  page FILE ladder (pageFile), the byte read (readBytes), the arg-line parser
+//  (parseArgs/argLineWith/spellWith) and the click classifiers (navSpell,
+//  filterVal).  ticket.js requires them; nothing is implemented twice.
+//  Every ticket-KEY click — a list row, a board inline value, an in-page
+//  ticket-valued pair, an in-page bare key or `[KEY]` reflink — spells
+//  `ticket <KEY>`; every FILTER / TOPIC click stays a `todo` spell.
 //
 //  The ticket tree is be.todoRoot() (URI-016: `projectRoot()+"/todo"` — the
 //  project root is DETECTED by a climb, never declared by an env var, and the
-//  board is that ONE dir, not the first hit of a probe order).  List rows and in-page ticket keys
-//  carry hidden context-less `O` click spells (`todo <KEY>`, BE-054 — U is now
-//  addresses only) so a pager click re-enters the view IN the unchanged
-//  context; `todo/done/` (closed tickets) never lists.
+//  board is that ONE dir, not the first hit of a probe order).  List rows
+//  carry hidden context-less `O` click spells (TODO-011: `ticket <KEY>` for a
+//  ticket row, `todo <TOPIC>` for a topic header — BE-054, U is now addresses
+//  only) so a pager click re-enters IN the unchanged context; `todo/done/`
+//  (closed tickets) never lists.
 //
 //  OPEN filter — TODO-004 supersedes the 2026-07-10 header-grep ruling.  The
 //  state left the header for the [/meta/todo] META PAIRS: `Now:` carries
@@ -30,7 +44,7 @@
 //  order.  The classes are LEXICAL, case alone separates them:
 //    `todo`                  the open board (topics, `Sev:`- then number-ordered)
 //    `todo ABC`              one topic's open list          (all-caps word)
-//    `todo ABC-123`          one ticket page                (`uc ucnum* "-" dgt+`)
+//    `todo ABC-123`          REFUSED — that page is `ticket ABC-123` (TODO-011)
 //    `todo Now:OPEN`         one filter, every topic
 //    `todo ABC Now:OPEN`     a topic AND a filter
 //    `todo Who:gritzko Sev:HIGH`   two keys — they AND
@@ -57,7 +71,8 @@
 //  its own spell — key → `Key:*`, value → `Key:value` — as context-less `O`
 //  spells, so the pager stays arg-blind and the VERB resolves the arg.
 //  TODO-008: a VALUE that lexes as a ticket id (`See: BE-050`) is a LINK — it
-//  navigates to `todo BE-050`, the key half keeps its presence filter.
+//  navigates to that ticket's PAGE (TODO-011: `ticket BE-050`), while the key
+//  half keeps its presence filter, a `todo` spell.
 //  TIME-SORT (TODO-004): a FLAT filter result is freshest-first, dirty by mtime
 //  above committed by commit ts; the board and topic lists keep `Sev:` order.
 //
@@ -96,11 +111,7 @@
 //  dotted rails.  Plain stays chrome-free (rails are structure, they stay);
 //  the `Sev:` ORDER applies to both.
 //  Topic READMEs are landing pages, NEVER an index (they go stale);
-//  `todo KEY` renders any page regardless — direct addressing always works.
-//  Page reflinks resolve via the page's OWN refdef footer: a ticket-file
-//  target re-enters `todo <KEY>`, any other in-tree page becomes the context-
-//  less O spell `cat <meta-root-relative-path>` (right when the pager's context
-//  tree IS the meta root; cross-tree authority is a pending ruling).
+//  `ticket KEY` renders any page regardless — direct addressing always works.
 "use strict";
 
 const pathlib = require("../../shared/util/path.js");
@@ -111,7 +122,6 @@ const SPELL   = require("../../shared/spell.js");      // BE-054: O-spell codec
 const metaidx = require("../../shared/metaidx.js");    // TODO-003: the meta index
 const CACHE   = require("../../shared/cache.js");      // STATUS-019: the rev tree
 
-const EMPTY32 = new Uint32Array(0);
 const EXTS = ["mkd", "md", "txt"];        // this board is .mkd-first
 const CAP = 1 << 20;                       // 1 MiB page cap (tickets are small)
 
@@ -809,7 +819,7 @@ function span(parts, spans, off, text, tag) {
 }
 //  One list row: `<indent><KEY><rest>\n` with the KEY an `F` token.  BE-054:
 //  the pager row (`btn`) follows the KEY with the hidden context-less `O` nav
-//  `todo <KEY>` (verb clicks are O) — pager-ONLY chrome, so the plain path
+//  `ticket <KEY>` (verb clicks are O) — pager-ONLY chrome, so the plain path
 //  emits no click token (an O in a plain hunk would trip the why-plain cursor).
 //  BE-040 r3: `btn` also grows the BE-041 button tail — ` ` sep, visible Y
 //  `[done]`, hidden O `done KEY` — AFTER the nav O so the title click navigates.
@@ -1061,7 +1071,8 @@ function titleRow(parts, spans, off, indent, t, btn, cols) {
              t.closed ? TAG_D : PRIO_TAG[prio]);
   off = span(parts, spans, off, " ", TAG_S);
   off = span(parts, spans, off, key, TAG_F);
-  off = span(parts, spans, off, SPELL.mintOspell("", "todo " + key), TAG_O);
+  //  TODO-011: a ticket KEY lands on the ticket PAGE — its own view now.
+  off = span(parts, spans, off, SPELL.mintOspell("", "ticket " + key), TAG_O);
   let vw = 0;
   for (const v of vals || []) {
     off = span(parts, spans, off, " [", TAG_S);
@@ -1181,141 +1192,6 @@ function emitList(sink, banner, groups, headers, btns) {
   feed(sink, banner, parts, spans, off);
 }
 
-//  --- page links --------------------------------------------------------------
-//  The page's reflink DEFINITIONS: `[name]: <target> …` footer lines → a
-//  name→target map (char-scan, one line each; a URL target stays inert later).
-function refdefs(text) {
-  const map = {};
-  for (const line of text.split("\n")) {
-    if (line[0] !== "[") continue;
-    const rb = line.indexOf("]");
-    if (rb <= 1 || line[rb + 1] !== ":") continue;
-    let i = rb + 2;
-    while (i < line.length && (line[i] === " " || line[i] === "\t")) i++;
-    let j = i;
-    while (j < line.length && line[j] !== " " && line[j] !== "\t") j++;
-    if (j > i) map[line.slice(1, rb)] = line.slice(i, j);
-  }
-  return map;
-}
-function isReg(p) { try { return io.stat(p).kind === "reg"; } catch (e) { return false; } }
-//  A link TARGET (refdef path, or an inline `/pocket/Page` shortcut) → its
-//  click spell (BE-054: minted O at the splice): a ticket file (`KEY.<ext>`
-//  basename) re-enters `todo KEY`; any
-//  other page resolves against the page's dir, re-anchors META-ROOT-relative
-//  and opens as `cat <rel>` (extensionless shortcuts probe `.mkd/.md/.txt`).
-//  Scheme'd targets (http:, mailto:) and NAVESCAPE climbs stay inert.  No
-//  absolute fs path ever reaches a token; the spell text is all we compose.
-function targetSpell(board, pageDirRel, target) {
-  if (!target || target.indexOf(":") >= 0) return null;
-  const base = pathlib.basename(target);
-  const dot = base.lastIndexOf(".");
-  const stem = dot > 0 ? base.slice(0, dot) : base;
-  const ext = dot > 0 ? base.slice(dot + 1) : "";
-  if (ext && EXTS.indexOf(ext) >= 0 && shape(stem) === "key" && pageFile(board.dir, stem))
-    return "todo " + stem;
-  let rel;
-  try { rel = pathlib.resolveInTree(target[0] === "/" ? "" : pageDirRel, target); }
-  catch (e) { return null; }                            // NAVESCAPE → no link
-  if (!rel) return null;
-  const abs = join(board.root, rel);
-  if (isReg(abs)) return "cat " + rel;
-  if (!ext) for (const e2 of EXTS) if (isReg(abs + "." + e2)) return "cat " + rel + "." + e2;
-  return null;
-}
-
-//  A ticket page: raw .mkd bytes; non-plain modes tokenize with the mkd
-//  grammar and splice a hidden context-less `O` after every RESOLVABLE link
-//  token (BE-054, cat.js withLinks model, board-scoped): a bare/`[KEY]` ticket
-//  key → `todo KEY`; a `[ref]`/`[/pocket/Page]` reflink → its refdef target's
-//  spell (todo/cat).  The page's OWN key gets no self-link.
-function emitPage(sink, board, key, file, mode, a) {
-  const bytes = readBytes(file);
-  if (bytes == null) return false;
-  let body = bytes, toks = EMPTY32;
-  if (mode !== "plain") {
-    try { toks = tok.parse(bytes, "mkd"); } catch (e) { toks = EMPTY32; }
-    if (toks.length) {
-      const pfx = board.root + "/";
-      const rel = file.indexOf(pfx) === 0 ? file.slice(pfx.length) : "";
-      const linked = pageLinks(board, key, pathlib.dirname(rel), bytes, toks, a);
-      body = linked.body; toks = linked.toks;
-    }
-  }
-  sink.feed("todo " + key, body, toks, "", 0n);
-  return true;
-}
-function pageLinks(board, selfKey, pageDirRel, body, toks, a) {
-  const defs = refdefs(utf8.Decode(body));
-  const us = new Array(toks.length);
-  const sta = new Array(toks.length);
-  let extra = 0, nlinks = 0, prev = 0;
-  for (let i = 0; i < toks.length; i++) { us[i] = null; sta[i] = prev; prev = tokEnd(toks[i]); }
-  const word = (i) => utf8.Decode(body.slice(sta[i], tokEnd(toks[i])));
-  //  BE-054: the verb click is a context-less O (empty ctx = "here").
-  const mint = (spell) => (spell && spell !== "todo " + selfKey)
-      ? utf8.Encode(SPELL.mintOspell("", spell)) : null;
-  const keySpell = (w) => (shape(w) === "key" && w !== selfKey && pageFile(board.dir, w))
-      ? "todo " + w : null;
-  //  A bare ticket key is an `F` token — it links on its own.
-  for (let i = 0; i < toks.length; i++)
-    if (tokTagL(toks[i]) === "F" && tokEnd(toks[i]) > sta[i]) us[i] = mint(keySpell(word(i)));
-  //  TODO-004: the META-PAIR block, read through the ONE shared matcher
-  //  (metaidx.metaBlock — the mkd tokenizer's `T` = the line-opening `Key:`,
-  //  plus the indent + "directly under the header" rulings of 2026-08-03).
-  //  The earlier claim here — that a `T` never fires on an INDENTED word, so
-  //  the view needed no second grammar — was FALSE: `T` is indent-tolerant,
-  //  while the index's line regex was anchored at column 0, so TODO-003's
-  //  four-space `Now:`/`Sev:` rendered and clicked but matched nothing.  One
-  //  matcher now answers both, so they cannot drift again.  Each half gets its
-  //  own whole-ARG-LINE spell: the key → `Key:*` (every ticket carrying it),
-  //  the value → `Key:value`.  The page's own id is the arg line here, so both
-  //  resolve against its TOPIC (argLineWith).
-  for (const p of metaidx.metaBlock(body, toks)) {
-    if (metaidx.codeOf(p.key) === null) continue;  // not a registered pair shape
-    us[p.ki] = mint(spellWith(a, p.key, "*"));
-    if (p.vi >= toks.length) continue;
-    //  TODO-008: a ticket-shaped VALUE is a LINK, not a filter — it jumps.
-    const nav = navSpell(p.value);
-    if (nav) { us[p.vi] = mint(nav); continue; }
-    const fv = filterVal(p.value);
-    if (fv !== null) us[p.vi] = mint(spellWith(a, p.key, fv));
-  }
-  //  DOG-024: a span is markup + text, so a reflink is the token RUN `[` … `]`,
-  //  not one `G` token — read the label from between the brackets and give every
-  //  token of the run the spell (a click anywhere on the link re-enters).
-  for (let i = 0; i < toks.length; i++) {
-    if (tokTagL(toks[i]) !== "G" || word(i) !== "[") continue;
-    let j = i + 1;
-    while (j < toks.length && !(tokTagL(toks[j]) === "G" && word(j) === "]")
-           && word(j).indexOf("\n") < 0) j++;
-    if (j >= toks.length || tokTagL(toks[j]) !== "G") continue;   // unclosed
-    const label = utf8.Decode(body.slice(tokEnd(toks[i]), sta[j]));
-    let spell = keySpell(label);
-    if (!spell && defs[label] !== undefined) spell = targetSpell(board, pageDirRel, defs[label]);
-    else if (!spell && label[0] === "/") spell = targetSpell(board, pageDirRel, label);
-    const u = mint(spell);
-    if (u) for (let k = i; k <= j; k++) if (!us[k]) us[k] = u;
-    i = j;
-  }
-  for (let i = 0; i < toks.length; i++) if (us[i]) { extra += us[i].length; nlinks++; }
-  if (!nlinks) return { body: body, toks: toks };
-  const out = new Uint8Array(body.length + extra);
-  const ntoks = new Uint32Array(toks.length + nlinks);
-  let op = 0, oi = 0;
-  prev = 0;
-  for (let i = 0; i < toks.length; i++) {
-    const end = tokEnd(toks[i]);
-    for (let p = prev; p < end; p++) out[op++] = body[p];
-    ntoks[oi++] = tokPack((toks[i] >>> 27) & 0x1f, op);
-    if (us[i]) { out.set(us[i], op); op += us[i].length; ntoks[oi++] = tokPack(TAG_O, op); }
-    prev = end;
-  }
-  return { body: out, toks: ntoks };
-}
-function tokTagL(w) { return String.fromCharCode(65 + ((w >>> 27) & 0x1f)); }
-function tokEnd(w) { return w & 0xffffff; }
-
 //  --- the ARG LINE (TODO-004, ruling 2026-08-03) -----------------------------
 //  parseArgs(argv) -> { subject, filters, toks } | { err }
 //    subject   { kind: "topic"|"key", w }  or null (the board)
@@ -1329,11 +1205,16 @@ function tokEnd(w) { return w & 0xffffff; }
 //    4. else a `TOPIC-123` / `TOPIC` shape is the SUBJECT — only one per line;
 //    5. else a bare meta KEY is an error pointing at `Key:*`;
 //    6. else the word is of no known class and the line refuses in plain words.
-function parseArgs(argv) {
+//  TODO-011: the parser is SHARED with views/ticket/ticket.js and stays purely
+//  GRAMMATICAL — it classes, it does not decide which view serves what.  Each
+//  verb then refuses the classes it does not serve (todo: a key subject →
+//  `ticket <KEY>`; ticket: a topic / a filter → `todo …`).  `scheme` is the
+//  DIS-060 spell form the caller answers to (`todo:GET-1` / `ticket:GET-1`).
+function parseArgs(argv, scheme) {
   const filters = [], toks = [];
   let subject = null;
   for (let i = 0; i < argv.length; i++) {
-    const w = unscheme(argv[i]);
+    const w = unscheme(argv[i], scheme);
     if (w === "" || w === ".") continue;
     const ci = w.indexOf(":");
     if (ci > 0) {
@@ -1367,10 +1248,9 @@ function parseArgs(argv) {
     return { err: "'" + w + "' is not a ticket code, a topic or a Key:Value" +
              " filter — try ABC-123, ABC or Now:OPEN" };
   }
-  //  A ticket id names ONE page; a page cannot be narrowed by a filter.
-  if (subject && subject.kind === "key" && filters.length)
-    return { err: "'" + subject.w + "' names one ticket page — a Key:Value" +
-             " filter needs a topic (" + keyTopic(subject.w) + ") or none" };
+  //  TODO-011: "a ticket id takes no filters" was a check HERE until the page
+  //  split; it is a per-VIEW refusal now (each view points at the other), so
+  //  the parser stays purely grammatical and neither message is duplicated.
   return { subject: subject, filters: filters, toks: toks };
 }
 
@@ -1394,15 +1274,21 @@ function argLineWith(a, key, val) {
   return out.join(" ");
 }
 //  the whole-arg-line click spell (BRO-025: never a `todo(key,value)` call).
+//  TODO-011: a FILTER click is table business and stays a `todo` spell wherever
+//  it is rendered — the board's inline `[value]` brackets AND the ticket view's
+//  in-page meta block both mint through THIS one function.
 function spellWith(a, key, val) { return "todo " + argLineWith(a, key, val); }
 
 //  TODO-008: a rendered value that lexes as a TICKET ID (the grammar's own
 //  `key` class) clicks to that ticket's page — its LEXICAL class alone decides,
 //  so an unregistered key's ticket-shaped value navigates too, and a dangling
-//  code gets the `todo` verb's own miss line.  null = no jump, filter as before.
+//  code gets the `ticket` view's own miss line.  null = no jump, filter as
+//  before.  TODO-011: THE one home for the nav spell — the board's inline
+//  `[value]` bracket and the ticket view's in-page meta block both call it, so
+//  the page's verb name can never drift between the two render sites.
 function navSpell(raw) {
   const t = String(raw == null ? "" : raw).trim();
-  return shape(t) === "key" ? "todo " + t : null;
+  return shape(t) === "key" ? "ticket " + t : null;
 }
 
 //  A rendered value -> the filter ARG that matches it, or null when none does.
@@ -1521,10 +1407,13 @@ function noIndex() {
 }
 
 //  DIS-060: tolerate the scheme'd `todo:GET-1` spell form via ONE parse.
-function unscheme(arg) {
+//  TODO-011: `scheme` names the form the CALLING view answers to, so the one
+//  parse serves `todo:…` and `ticket:…` alike; it defaults to this view's own.
+function unscheme(arg, scheme) {
   let w = String(arg == null ? "" : arg);
+  const sc = scheme || "todo";
   if (w.indexOf(":") >= 0) {
-    try { const p = uri._parse(w); if (p.scheme === "todo") w = p.path || ""; } catch (e) {}
+    try { const p = uri._parse(w); if (p.scheme === sc) w = p.path || ""; } catch (e) {}
   }
   return w;
 }
@@ -1544,8 +1433,22 @@ function todo() {
   _fresh = null;                      // ...and ONE repo handle for the time sort
   const argv = [];
   for (let i = 0; i < arguments.length; i++) argv.push(String(arguments[i]));
-  const a = parseArgs(argv);
+  const a = parseArgs(argv, "todo");
   if (a.err) bad(a.err);
+  //  TODO-011: the one-ticket PAGE is its own view now — `todo` is the tabular
+  //  side (board / topic list / meta-pair filters) and refuses a ticket id in
+  //  plain words, naming the view that does serve it.  RULING default: refuse,
+  //  never silently re-route — the arg line IS the address bar, and a `todo`
+  //  line that answers with a page would lie about where the reader is.
+  //  ...and a filter cannot narrow a page either, so ONE refusal covers both
+  //  `todo ABC-123` and `todo ABC-123 Now:OPEN`.
+  if (a.subject && a.subject.kind === "key")
+    bad("'" + a.subject.w + "' names one ticket page, and this is the board — " +
+        "write 'ticket " + a.subject.w + "' for the page, or 'todo " +
+        keyTopic(a.subject.w) +
+        (a.filters.length ? " " + a.toks.filter(function (t) {
+             return t.indexOf(":") > 0; }).join(" ") : "") +
+        "' for the topic's list");
   //  a TOPIC that is no dir keeps the historic uniform miss line, filter or not.
   if (a.subject && a.subject.kind === "topic" && !isDir(join(board.dir, a.subject.w)))
     miss(a.subject.w, "TODONONE");
@@ -1565,10 +1468,7 @@ function todo() {
                  return [openTickets(board.dir, w)]; }), false, mode !== "plain");
       return;
     }
-    //  Direct addressing ALWAYS works — open or closed, the page renders.
-    const file = pageFile(board.dir, a.subject.w);
-    if (!file || !emitPage(sink, board, a.subject.w, file, mode, a))
-      miss(a.subject.w, "TODONONE");
+    //  TODO-011: a ticket id reaches here only via the refusal above.
   } finally { runClose(); }
 }
 todo.jab = "args";
@@ -1599,3 +1499,16 @@ module.exports.runClose = runClose;
 module.exports.fileFrame = fileFrame;
 module.exports.commitFrame = commitFrame;
 module.exports.FRAMEW = { file: FRAMEW_FILE, commit: FRAMEW_COMMIT, region: FRAMESW };
+//  TODO-011: THE shared ground views/ticket/ticket.js reads this module for —
+//  the ticket tree's lexer, its file ladder, its byte read, the arg-line
+//  grammar and the two click classifiers.  The ticket view implements NONE of
+//  them a second time; it adds only the mkd PAGE rendering the board has no
+//  use for.  (shape/ticketKey/pageFile/boardDir/pageTitle are exported above.)
+module.exports.keyTopic = keyTopic;
+module.exports.readBytes = readBytes;
+module.exports.EXTS = EXTS;
+module.exports.parseArgs = parseArgs;
+module.exports.argLineWith = argLineWith;
+module.exports.spellWith = spellWith;
+module.exports.navSpell = navSpell;
+module.exports.filterVal = filterVal;

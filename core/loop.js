@@ -162,6 +162,11 @@ function mintBe(ambient) {
   if (!g.wrap) g.wrap = { 
 	  log: false,
 	  todo: false,
+	  //  TODO-011: the one-ticket PAGE split out of `todo` into its own view.
+	  //  It keeps the wrap default it had while `todo` served it — no-wrap —
+	  //  so the split changes nothing a reader can see (an UNLISTED type would
+	  //  have silently defaulted to soft-wrap, pager.js wrapFor).
+	  ticket: false,
 	  work: false,
 	  cat: true, 
 	  diff: true, 

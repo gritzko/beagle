@@ -464,17 +464,19 @@ function ticketTitle(key) {
 }
 
 //  WORK-010: the `[?]` click-spell for a wt named after a ticket.  RULING
-//  (gritzko 2026-07-19): an O-invite with EMPTY context, verb `todo`, the ticket
-//  key as ARGUMENT — `//: todo TKT-123` (no wt context welded; the key is the
+//  (gritzko 2026-07-19): an O-invite with EMPTY context, the ticket
+//  key as ARGUMENT — `//: ticket TKT-123` (no wt context welded; the key is the
 //  arg, not the context).  The name resolves through the SHARED todo parser:
 //  its BASE ticket key (suffix-tolerant, `PIN-1b`→`PIN-1`, a page must exist), or
 //  a bare TOPIC (the topic dir exists → `//: todo TOPIC`); "" for any other name.
+//  TODO-011: a KEY names a PAGE and pages are the `ticket` view now, so the key
+//  branch mints `ticket <KEY>`; the TOPIC branch is a listing and stays `todo`.
 function ticketLink(name) {
   if (_link.has(name)) return _link.get(name);          // TODO-001: once per name
   const board = memoBoard();
   let s = "";
   const key = board ? todo.ticketKey(name) : "";
-  if (key) s = memoPage(key) ? SPELL.mintOspell("//", "todo " + key) : "";
+  if (key) s = memoPage(key) ? SPELL.mintOspell("//", "ticket " + key) : "";
   else if (board && todo.shape(name) === "topic")
     s = isDir(join(board.dir, name)) ? SPELL.mintOspell("//", "todo " + name) : "";
   _link.set(name, s);
@@ -560,7 +562,8 @@ function fadeHex(ts) {
 
 //  The wt row: `//KEY ┄┄┄  [?] [±] [post]  [+N][-N]  <time5> #<hashlet8>
 //  <subject> [done] [dont]` — buttons pager-only, everything else content.
-//  WORK-010: [?] (`//: todo TKT` invite) + [±] (compact diff) lead the buttons.
+//  WORK-010: [?] (`//: ticket TKT` / `//: todo TOPIC` invite) + [±] (compact
+//  diff) lead the buttons.
 function wtSpans(parts, spans, off, rails, d, btns) {
   const ctx = "//" + d.key;
   //  WORK-005: pager-only leading fade marker; the plain path stays chrome-free.
@@ -572,8 +575,9 @@ function wtSpans(parts, spans, off, rails, d, btns) {
   off = span(parts, spans, off, btns && !link ? leader(SLOT_HELP) + " " : " ", TAG_S);
   if (btns) {
     //  WORK-010 RULING: [?] then [±] LEAD the button run.  [?] is the O-invite
-    //  `//: todo TKT` (nav to the ticket page / topic list) on a ticket-/topic-
-    //  named wt, else the slot ┄-pads (WORK-006); [±] is the compact [diff] face.
+    //  `//: ticket TKT` / `//: todo TOPIC` (nav to the ticket page, resp. the
+    //  topic list) on a ticket-/topic-named wt, else the slot ┄-pads
+    //  (WORK-006); [±] is the compact [diff] face.
     if (link) {
       off = span(parts, spans, off, "[?]", TAG_V);
       off = span(parts, spans, off, link, TAG_O);
