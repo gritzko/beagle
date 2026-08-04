@@ -378,21 +378,33 @@ function open(storePath, project) {
   //  git.pack.resolve handles the full OFS/REF chase into a Buf; we size
   //  the out buffer to the record's declared size with slack and grow if
   //  resolve reports a larger result.
+  //  GIT-021: ONE reader-wide resolve buffer, PACK-003 slack.  `pk.size` on an
+  //  ofs-delta is the DELTA's own size, not the resolved object's, so a fresh
+  //  `io.buf(sz+64)` per read NOROOM'd and re-ran the WHOLE chase up to 24x:
+  //  a linux-v3.0 checkout burned 64 646 retries / 848 MB of throwaway buffers
+  //  over 36 783 leaves (anon RSS 1.8 GB).  The buffer only ever grows, so a
+  //  warmed reader resolves on the first try.
+  let rbuf = null;
   function readRecord(fileIdx, offset) {
     const pk = packAt(fileIdx);
     if (!pk) return undefined;
-    pk.seek(offset);
-    const sz = pk.size || 0;
-    //  resolve writes the fully-reconstructed object bytes into the Buf.
-    let cap = sz + 64;
-    for (let tries = 0; tries < 24; tries++) {
-      const out = io.buf(cap);
+    //  PTR-010: a rejected offset UNPOSITIONS the cursor — resolve would then
+    //  fail 24 times over, growing the ladder for nothing.
+    if (!pk.seek(offset)) return undefined;
+    let cap = (pk.size || 0) * 4 + 256;             // PACK-003 delta slack
+    if (rbuf && rbuf.cap > cap) cap = rbuf.cap;     // never shrink
+    for (let tries = 0; tries < 12; tries++) {
+      if (!rbuf || rbuf.cap < cap) rbuf = io.buf(cap);
+      rbuf.reset();
       try {
         pk.seek(offset);
-        pk.resolve(out);
-        return { bytes: out.data().slice(), type: pk.type };
+        pk.resolve(rbuf);
+        return { bytes: rbuf.data().slice(), type: pk.type };
       } catch (e) {
-        cap *= 2;       // NOROOM → grow and retry
+        //  Only a sizing failure is worth a bigger buffer; a ref-delta or a
+        //  corrupt record fails the same way at every cap.
+        if (("" + e).indexOf("NOROOM") < 0) throw e;
+        cap *= 4;
         if (cap > (1 << 30)) throw e;
       }
     }

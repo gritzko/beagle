@@ -91,9 +91,9 @@ function writeFile(wtRoot, rel, bytes) {
   fd = io.open(full, "c");                          // create/truncate
   try {
     try { io.resize(fd, 0); } catch (e) {}          // truncate if pre-existing
-    const b = io.buf(bytes.length + 8);
-    b.feed(bytes);
-    io.writeAll(fd, b);
+    //  GIT-021: io.writeAll takes a bare Uint8Array (it subarray-advances) —
+    //  the io.buf+feed round-trip copied EVERY checked-out file a second time.
+    io.writeAll(fd, bytes);
   } finally { io.close(fd); }
 }
 
