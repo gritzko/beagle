@@ -973,6 +973,16 @@ function postOne(info, ctx, row) {
     if (d.verb !== "add") continue;
     try { io.setMtime(wtpath(info.wt, d.path), rowTs); } catch (e) {}   // BE-011
   }
+  //  POST-037: the SAME stamp for the files this post's classify content-HASHED
+  //  and found CLEAN (their mtime was off the stamp-set).  Their bytes are in
+  //  the commit exactly like an `add`'s — a `keep` carries the baseline blob
+  //  through verbatim — so the stamp makes the identical truth claim, and the
+  //  next status confirms them by membership instead of re-hashing them.  Only
+  //  content-confirmed paths are listed (never a stamp-set hit, never a dirty
+  //  file), and the ts is the ASSIGNED row ts, never a resampled now.
+  for (const p of dres.confirmed || []) {
+    try { io.setMtime(wtpath(info.wt, p), rowTs); } catch (e) {}
+  }
 
   //  BRO-030: the quad report is THE post banner (wiki/Status.mkd "not a
   //  flag"); a `--quad` flag is tolerated as a no-op.

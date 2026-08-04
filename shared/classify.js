@@ -20,6 +20,13 @@
 //       (a move dst) vs `unk` (genuinely untracked).
 //  Folded under the ONE opt (NOT a pure status superset).
 //
+//  opts.wantConfirmed (POST-037) — classifyMerge additionally returns
+//    confirmed = [path, ...]   the CONTENT-confirmed `ok` paths of this run
+//  i.e. the clean files whose verdict cost a wt read + sha (their mtime was off
+//  the wtlog stamp-set).  Default OFF, output otherwise untouched — `status`
+//  stays a strict reader.  `post` turns it on so its BE-011 loop can stamp
+//  those paths to the post row ts and spare every later status the re-hash.
+//
 //  Bucket semantics (status_step):
 //    del   staged `delete` row                        (takes precedence)
 //    put   staged `put` row, path in baseline         (staged mod)
@@ -34,7 +41,8 @@
 //  sha) — EXCEPT a wt mtime ∈ the wtlog stamp-set, which is verb-recorded
 //  ground truth and reads `ok` with no content read (STATUS-011, the same
 //  trust as stage.js:150; membership only, never a re-stamp — DIS-023
-//  banned the re-stamping drift gate).  Submodule (gitlink) rows are recorded
+//  banned the re-stamping drift gate; the stamp for a content-confirmed clean
+//  file is written by the VERB that paid for the read, POST-037).  Submodule (gitlink) rows are recorded
 //  as prefixes and their internals dropped; the mount itself is left to
 //  JS-033 (no sub row emitted here) but a gitlink that is base-only with
 //  no intent counts `ok` (the SUBS dirty axis comes later).
@@ -278,7 +286,9 @@ function expectedSha(reader, path, baseTipSha, theirsShas, cache) {
 //                scope paths are dropped from the output (post keeps baseline).
 //    skipMeta  — drop `.be`/`.git` rows from base + put/del (post needs this;
 //                status's wtScan already drops them on disk).
-//  Returns { rows, counts, haveBase, baseTreeSha, gitlinks }.
+//    wantConfirmed — POST-037: also return `confirmed`, the CONTENT-confirmed
+//                `ok` paths (the hash ran).  Default OFF.
+//  Returns { rows, counts, haveBase, baseTreeSha, gitlinks[, confirmed] }.
 function classifyMerge(be, wtlogReader, reader, opts) {
   opts = opts || {};
   const wtRoot = be.wt;
@@ -399,6 +409,14 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   //  `ok` is count-only for STATUS (a clean file would flood the output), but
   //  `post` (opts.wantClean) NEEDS each clean row to `keep` it in the tree.
   const emitClean = !!(opts.listing || opts.wantClean);
+  //  POST-037: the CONTENT-confirmed `ok` paths — the clean verdicts this run
+  //  PAID a wt read + sha for (the mtime was off the stamp-set).  Opt-gated
+  //  (`wantConfirmed`, the JAB-018 `listing` precedent): status never asks, so
+  //  its rows/counts are untouched.  A stamp-set-confirmed `ok` (`has(mtime)`
+  //  hit, no read) is deliberately NOT listed — it already carries a truthful
+  //  stamp and restamping would shift provenance for no gain (PUT.mkd:27).
+  const confirmed = opts.wantConfirmed ? [] : null;
+  function confirm(path) { if (confirmed) confirmed.push(path); }
   function push(o) {
     counts[o.bucket]++;
     if (o.bucket === "ok" && !emitClean) return;   // status: ok is count-only
@@ -519,6 +537,7 @@ function classifyMerge(be, wtlogReader, reader, opts) {
       if (patched) {
         const wSha = wtBlobSha(wtRoot, path);
         if (wSha === b.sha) {
+          confirm(path);                    // POST-037: the hash ran, it is clean
           push({ bucket: "ok", path: path, ts: w.ts, oldSha: b.sha,
                  mode: b.mode, eq: true, clean: true });
           continue;
@@ -545,6 +564,9 @@ function classifyMerge(be, wtlogReader, reader, opts) {
             && wtlogReader.has(w.ts);
       const eqBase = stamped || wtEqBase(wtRoot, path, b.sha);
       if (eqBase) {
+        //  POST-037: `!stamped && eqBase` is exactly the content-confirmed leg
+        //  (wtEqBase read the bytes); a stamp-set hit is left alone.
+        if (!stamped) confirm(path);
         push({ bucket: "ok", path: path, ts: w.ts, oldSha: b.sha,
                mode: b.mode, eq: true, clean: true });
       } else {
@@ -556,7 +578,8 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   }
 
   return { rows: rows, counts: counts, haveBase: haveBase, anyPd: anyPd,
-           gitlinks: gitlinks, baseTreeSha: baseTreeSha, base: base };
+           gitlinks: gitlinks, baseTreeSha: baseTreeSha, base: base,
+           confirmed: confirmed || undefined };   // POST-037 (opt-gated)
 }
 
 //  --- the merge --------------------------------------------------------

@@ -103,9 +103,13 @@ function decide(be, wtlogReader, storeReader, narrow, selective) {
   //  merge's OUTPUT ulog (shared/classify.js classifyMerge) — the SAME base ⊕
   //  put ⊕ wt ⊕ theirs merge `status` renders.  We map each output row's bucket
   //  (+ resolved sha/mode) to a keep/unlink/add decision; no second merge.
+  //  POST-037: `wantConfirmed` rides along — the clean paths this classify
+  //  content-HASHED (their mtime was off the stamp-set).  post's BE-011 loop
+  //  stamps them with the post row ts, so the verdict we just paid for is
+  //  recorded instead of thrown away.
   const m = classify.classifyMerge(be, wtlogReader, storeReader,
                                    { underNarrow: underNarrow, skipMeta: true,
-                                     wantClean: true });
+                                     wantClean: true, wantConfirmed: true });
   const base = m.base, haveBase = m.haveBase;
   const anyPd = (selective === undefined) ? m.anyPd : !!selective;
   const baseTreeSha = m.baseTreeSha;
@@ -216,7 +220,8 @@ function decide(be, wtlogReader, storeReader, narrow, selective) {
   //  re-emits interleave, so sort the final set.
   kept.sort(function (a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
 
-  return { decisions: kept, baseTreeSha, haveBase, hasPatch: false };
+  return { decisions: kept, baseTreeSha, haveBase, hasPatch: false,
+           confirmed: m.confirmed || [] };        // POST-037
 }
 
 //  The wt kind (f/x/l) at `rel` for a move-dst add (the dst is a wt-only file
