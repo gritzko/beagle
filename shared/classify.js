@@ -67,6 +67,10 @@ const isFullSha = shalib.isFullSha;
 //  each) are its two callers; no second implementation of either leg.
 //  → { names, nestedPrefixes, underNested }
 function wtWalk(wtRoot, ignore) {
+  //  TODO-006: the rev tree arms a wt by walking it, right before the caller
+  //  computes — take THAT walk instead of doing the same one twice.
+  const pre = require(libDir() + "/cache.js").takeWalk(wtRoot);
+  if (pre) return pre;
   //  io.readdir recursive returns the flat subtree, dirs marked with a
   //  trailing '/'.  We can't easily prune nested-repo subtrees with the
   //  flat form, so detect a nested-repo prefix and drop paths under it.

@@ -55,6 +55,7 @@ const S = globalThis.__BE_REV_TREE__ || (globalThis.__BE_REV_TREE__ = {
   seen: null,              // absolute dir → the rev last handed out (STATS only)
   token: 0,                // the no-watcher token counter (always fresh)
   drainBuf: null,          // the drain sink (one burst)
+  walk: null,              // TODO-006: the arming walk, published for its caller
   root: "",
   st: { hits: 0, misses: 0, bumps: 0, watches: 0 },
 });
@@ -81,7 +82,7 @@ function stop() {
   if (S.wfd >= 0) { try { fsw.close(S.wfd); } catch (e) {} }
   S.wfd = -1;
   S.spot = null; S.wdOf = null; S.dirOf = null; S.armed = null; S.seen = null;
-  S.drainBuf = null;
+  S.drainBuf = null; S.walk = null;
 }
 
 //  STATUS-019: THE stamp — one increment of the shared counter, applied to the
@@ -164,6 +165,20 @@ function arm(wt) {
     armDir(wtpath(wt, rel));
   }
   S.armed[wt] = S.spot[wt];
+  //  TODO-006: PUBLISH it — the caller queried this spot because it is about to
+  //  classify that very wt, and that walk is the arming walk over again (6 s of
+  //  a 10.6 s cold board).  ONE slot: the take below is the next thing to run.
+  S.walk = { wt: wt, rev: S.spot[wt], w: w };
+}
+
+//  TODO-006: hand the arming walk to the compute that follows the query — ONCE,
+//  and only while the spot still stands where the walk was done.  No hit, no
+//  slot, a moved spot: the caller walks itself (classify.wtWalk).
+function takeWalk(wt) {
+  const s = S.walk;
+  if (!live() || !s || s.wt !== wt) return null;
+  S.walk = null;
+  return s.rev === S.spot[wt] ? s.w : null;
 }
 
 //  THE query.  No watcher, or a dir that could not be armed → a FRESH TOKEN, so
@@ -190,4 +205,4 @@ function stats() {
 }
 
 module.exports = { start: start, stop: stop, rev: rev, poll: poll,
-                   bumpRoot: bumpRoot, stats: stats };
+                   bumpRoot: bumpRoot, stats: stats, takeWalk: takeWalk };

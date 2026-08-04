@@ -107,6 +107,7 @@ const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridg
 const ticket  = require("../../shared/ticket.js");    // BRO-012: shared key scan
 const SPELL   = require("../../shared/spell.js");      // BE-054: O-spell codec
 const metaidx = require("../../shared/metaidx.js");    // TODO-003: the meta index
+const CACHE   = require("../../shared/cache.js");      // STATUS-019: the rev tree
 
 const EMPTY32 = new Uint32Array(0);
 const EXTS = ["mkd", "md", "txt"];        // this board is .mkd-first
@@ -504,7 +505,10 @@ function listTopic(dir, topic) {
     //  packed payload is a match token, never a render source.
     const head = pageHead(file);
     const title = head.title;
+    //  TODO-006: the row names its FILE — the line memo's key (a parked
+    //  `todo/done/KEY.mkd` carries the same code, so a code key would collide).
     out.push({ key: key, title: title, mark: headerMark(key, title), meta: head.meta,
+                 file: file,
                  prio: prioOf(file, key, title), closed: isClosed(file, key, title) });
   }
   out.sort(function (a, b) {
@@ -519,8 +523,17 @@ function listTopic(dir, topic) {
 
 //  TODO-004: one topic's LISTING = its ticket files that are not CLOSED — the
 //  `Now:` pair first, the legacy header mark as the fallback.  No README index.
+//  TODO-006 r3: the HEAD block's memo — the topic DIR is its witness, so ONE
+//  ticket edit re-reads THAT topic's heads and every other topic replays its
+//  rows (title, prio, closed, meta) with no file read at all.  The rows are the
+//  same objects a later render re-derives `wt`/`rails`/`stat` on.
 function openTickets(dir, topic) {
+  const tdir = join(dir, topic);
+  const rv = _memoOn ? CACHE.rev(tdir) : 0;
+  const had = _memoOn ? _topicMemo.get(tdir) : undefined;
+  if (had && had.rev === rv) return { topic: topic, tickets: had.tickets };
   const files = listTopic(dir, topic).filter(function (t) { return !t.closed; });
+  if (_memoOn) _topicMemo.set(tdir, { rev: rv, tickets: files });
   return { topic: topic, tickets: files };
 }
 //  The board's topics: every UPPERCASE-shaped subdir with >=1 ticket ("done" —
@@ -554,8 +567,24 @@ function worklib() { return require("../work/work.js"); }
 let _wtix, _reg = null, _wtc = new Map(), _tips = new Map();
 //  STATUS-019: the ACROSS-run memos, keyed by the shared/cache.js rev of the wt
 //  (resp. the sub boundary) — a spot whose rev stands still cannot have changed.
-let _wtRev = new Map(), _subRev = new Map();
-function runReset() { _wtix = undefined; _reg = null; _wtc = new Map(); _tips = new Map(); }
+//  TODO-006 r3: one memo PER BLOCK, each with its own witness — the FILE counts
+//  by rev(wtDir), the ticket HEADS by rev(topic dir), the ahbeh pair by the tips
+//  fingerprint (_ciTips).  They hold numbers and strings, nothing live.
+let _fileRev = new Map(), _subRev = new Map(), _ciTips = new Map();
+//  TODO-006: the per-run wtlog reads behind the tips FINGERPRINT (below).
+let _tipc = new Map();
+function runReset() {
+  _wtix = undefined; _reg = null; _wtc = new Map(); _tips = new Map();
+  _tipc = new Map(); _boardStill = false;
+  //  TODO-006: the memos exist only while a watcher is live (cache.js ruling 3)
+  //  — one that went away, or came back, invalidates every rev they hold.
+  const on = CACHE.stats().live;
+  if (on !== _memoOn) {
+    _fileRev.clear(); _subRev.clear(); _ciTips.clear();
+    _topicMemo.clear(); _boardMemo.clear();
+  }
+  _memoOn = on;
+}
 function runClose() { if (_reg) { try { _reg.close(); } catch (e) {} } _reg = null; }
 
 //  TODO-005: the exact reverse of WORK-010's `[?]` — every `work/` wt name maps
@@ -632,28 +661,64 @@ function foldSubs(r, repo) {
 //  Ahbeh is work's registry (the WORK-011 graf cache) against work's own track
 //  edge, memoized per track.  An unreadable wt yields null and the row's slots
 //  blank out — never an error row.
-function wtStat(w) {
-  if (_wtc.has(w.dir)) return _wtc.get(w.dir);
-  //  STATUS-019: the wt's rev stands still ⇒ no file under it moved ⇒ the whole
-  //  read (classifyMerge + foldSubs) replays from the last run's record.
-  const rv = require("../../shared/cache.js").rev(w.dir);
-  const kept = _wtRev.get(w.dir);
-  if (kept && kept.rev === rv) { _wtc.set(w.dir, kept.stat); return kept.stat; }
-  let r = null;
+//  TODO-006: the TIPS FINGERPRINT — the wt's cur tip plus its RESOLVED track
+//  tip, the status.js `state` precedent for what the watcher cannot witness: a
+//  post or fetch from a second wt rewrites refs under an unwatched `.be/`, so
+//  no rev moves while the ahbeh counts (and the patch arg) do.  The wtlog reads
+//  it pays are kept per run, so the miss path below opens the log ONCE.
+function tipsOf(w) {
+  let e = _tipc.get(w.dir);
+  if (e !== undefined) return e;
+  e = { tips: "?", repo: null, log: null, cur: null, att: null, tip: "" };
   try {
     const work = worklib();
     if (!_reg) _reg = work.registry();
-    const wtlog = require("../../shared/wtlog.js");
-    const repo = be.treeAt(w.dir);
-    const k = _reg.keeperFor(repo);
-    if (k) {
-      const log = wtlog.open(repo);
-      r = { un: { chg: 0, add: 0, del: 0 }, st: { chg: 0, add: 0, del: 0 },
-            staged: 0, dirty: false, counts: null, patch: null };
-      foldCounts(r, repo, log, k);
-      foldSubs(r, repo);
-      r.dirty = (r.un.chg + r.un.add + r.un.del) > 0;
-      const cur = log.curTip(), att = log.attachedBranch();
+    e.repo = be.treeAt(w.dir);
+    e.log = require("../../shared/wtlog.js").open(e.repo);
+    e.cur = e.log.curTip();
+    e.att = e.log.attachedBranch();
+    const tk = (e.att.uriTrack && e.att.track) || "";
+    if (tk && _tips.has(tk)) e.tip = _tips.get(tk);
+    else { e.tip = work.trackTip(_reg, e.repo, e.att); if (tk) _tips.set(tk, e.tip); }
+    e.tips = ((e.cur && e.cur.sha) || "") + "|" + e.tip + "|" + (e.att.detached ? "!" : "") +
+             (e.att.track || "") + "?" + (e.att.branch || "");
+  } catch (er) { e.tips = "?"; }
+  _tipc.set(w.dir, e);
+  return e;
+}
+//  TODO-006 r3 (RULING 2026-08-04): the wt row is TWO BLOCKS, TWO WITNESSES.
+//  A post to the MAIN TREE moves every wt's tips at once — splitting them is
+//  what keeps it from re-classifying 88 worktrees to move one ahbeh pair.
+function fileStat(w, tp) {
+  //  STATUS-019: the wt's rev stands still ⇒ no file under it moved ⇒ the whole
+  //  read (classifyMerge + foldSubs) replays from the last run's record.
+  const rv = CACHE.rev(w.dir);
+  const kept = _fileRev.get(w.dir);
+  if (kept && kept.rev === rv) return kept.f;
+  let f = null;
+  try {
+    const repo = tp.repo, log = tp.log;
+    const k = repo && _reg ? _reg.keeperFor(repo) : null;
+    if (k && log) {
+      f = { un: { chg: 0, add: 0, del: 0 }, st: { chg: 0, add: 0, del: 0 },
+            staged: 0, dirty: false };
+      foldCounts(f, repo, log, k);
+      foldSubs(f, repo);
+      f.dirty = (f.un.chg + f.un.add + f.un.del) > 0;
+    }
+  } catch (e) { f = null; }
+  _fileRev.set(w.dir, { rev: rv, f: f });
+  return f;
+}
+//  The COMMIT block: the ahbeh pair and the patch FORM its button spells, both
+//  measured against the very tips the fingerprint names — its whole witness.
+function commitStat(w, tp) {
+  const kept = _ciTips.get(w.dir);
+  if (kept && kept.tips === tp.tips) return kept.c;
+  let c = null;
+  try {
+    if (tp.repo && _reg) {
+      const cur = tp.cur, att = tp.att;
       //  TODO-005 r2: the diverged button's patch ARG must name the SAME tip the
       //  ahbeh counts measured, and absorb the whole missing LINE (not one
       //  commit).  `#<sha>` does NOT: patchscope reads a fragment as the NAMED
@@ -663,17 +728,24 @@ function wtStat(w) {
       //  what work.trackTip measured), and BARE `patch` (PATCH-015: the whole
       //  missing line of the tracked ref, which is what refTip measured).
       //  null = no form names that tip, so the pair greys.
-      r.patch = att.detached ? null
-              : att.uriTrack ? ((att.track && att.track.slice(0, 2) === "//") ? att.track : null)
-              : att.branch ? "?" + att.branch : "";
-      const tk = (att.uriTrack && att.track) || "";
-      let tip;
-      if (tk && _tips.has(tk)) tip = _tips.get(tk);
-      else { tip = work.trackTip(_reg, repo, att); if (tk) _tips.set(tk, tip); }
-      r.counts = _reg.counts(repo, (cur && cur.sha) || "", tip);
+      c = { counts: null,
+            patch: att.detached ? null
+                 : att.uriTrack ? ((att.track && att.track.slice(0, 2) === "//") ? att.track : null)
+                 : att.branch ? "?" + att.branch : "" };
+      c.counts = _reg.counts(tp.repo, (cur && cur.sha) || "", tp.tip);
     }
-  } catch (e) { r = null; }
-  _wtRev.set(w.dir, { rev: rv, stat: r });
+  } catch (e) { c = null; }
+  _ciTips.set(w.dir, { tips: tp.tips, c: c });
+  return c;
+}
+//  The row's numbers, one object per run — fileFrame and commitFrame render the
+//  tok array off it EVERY render (there is no second, cached renderer).
+function wtStat(w) {
+  if (_wtc.has(w.dir)) return _wtc.get(w.dir);
+  const tp = tipsOf(w);                 // the fingerprint opens the repo + log
+  const f = fileStat(w, tp), c = commitStat(w, tp);
+  const r = f ? { un: f.un, st: f.st, staged: f.staged, dirty: f.dirty,
+                  counts: c ? c.counts : null, patch: c ? c.patch : null } : null;
   _wtc.set(w.dir, r);
   return r;
 }
@@ -998,6 +1070,41 @@ function feed(sink, banner, parts, spans, off) {
   sink.feed(banner, body, toks, "", 0n);
 }
 
+//  --- TODO-006 r3: the STRUCTURED per-row cache -------------------------------
+//  RULING (gritzko 2026-08-04, supersedes r2's rendered-line splice): cache the
+//  NUMBERS and the HEAD FIELDS — never the rendered bytes — and run titleRow /
+//  fileFrame / commitFrame over them EVERY render.  Each BLOCK has its OWN
+//  witness and drops alone:
+//    * the ticket HEADS   — rev(the topic dir)     (_topicMemo, openTickets)
+//    * the FILE counts    — rev(the wt dir)        (_fileRev, fileStat)
+//    * the ahbeh + patch  — the tips fingerprint   (_ciTips, commitStat)
+//  Above them ONE board-wide short-circuit: a still rev(be.todoRoot()) proves no
+//  ticket changed anywhere, so listTopics / listTopic / metaidx and every head
+//  read are skipped and the sort + `Sub:` nesting run off the cached rows.
+//  All of it is pager-only and lives only while a watcher is live (ruling 3).
+let _boardMemo = new Map();     // board dir + arg line → { rev, groups }
+let _topicMemo = new Map();     // topic dir → { rev, tickets }
+let _memoOn = false;            // a watcher is live: the memos may be used
+let _boardStill = false;        // this run's rev(todoRoot) stood still
+//  THE render: the row's numbers first, then the ONE titleRow over them — the
+//  frames are re-emitted every render, off the cached counts (the r3 ruling).
+function renderRow(parts, spans, off, indent, t, btn, cols) {
+  if (t.wt) t.stat = wtStat(t.wt);
+  return titleRow(parts, spans, off, indent, t, btn, cols);
+}
+//  THE one-shot board check: a standstill reuses the whole row set —
+//  no listTopics, no listTopic, no metaidx find, no ticket read at all.
+function boardGroups(board, line, build) {
+  if (!_memoOn) return build();
+  const rv = CACHE.rev(board.dir);
+  const key = board.dir + "\u0000" + line;
+  const had = _boardMemo.get(key);
+  if (had && had.rev === rv) { _boardStill = true; return had.groups; }
+  const g = build();
+  _boardMemo.set(key, { rev: rv, groups: g });
+  return g;
+}
+
 //  The board / one topic, as ONE hunk of title rows.  BE-040 r3: `btns` puts a
 //  `[done]` button on every OPEN list row (pager-only; plain passes false).
 function emitList(sink, banner, groups, headers, btns) {
@@ -1027,10 +1134,10 @@ function emitList(sink, banner, groups, headers, btns) {
       if (btns) off = span(parts, spans, off, SPELL.mintOspell("", "todo " + g.topic), TAG_O);
       off = span(parts, spans, off, "\n", TAG_S);
     }
-    for (const t of lists[gi]) {
-      if (t.wt) t.stat = wtStat(t.wt);
-      off = titleRow(parts, spans, off, headers ? "  " : "", t, btns, cols);
-    }
+    //  TODO-006: every row goes through the LINE memo — a hit splices its stored
+    //  bytes, a miss falls through to the wt read and the one titleRow.
+    for (const t of lists[gi])
+      off = renderRow(parts, spans, off, headers ? "  " : "", t, btns, cols);
     if (!g.tickets.length)               // an explicit `todo TOPIC`, all closed
       off = span(parts, spans, off, (headers ? "  " : "") +
         (g.note || "(no open tickets in todo/" + g.topic + "/)") + "\n", TAG_S);
@@ -1399,12 +1506,14 @@ function todo() {
   try {
     if (a.filters.length) { todoFilter(board, a, mode, sink); return; }
     if (!a.subject) {
-      emitList(sink, "todo", listTopics(board.dir), true, mode !== "plain");
+      emitList(sink, "todo", boardGroups(board, "todo", function () {
+                 return listTopics(board.dir); }), true, mode !== "plain");
       return;
     }
     if (a.subject.kind === "topic") {
-      emitList(sink, "todo " + a.subject.w, [openTickets(board.dir, a.subject.w)],
-               false, mode !== "plain");
+      const w = a.subject.w;
+      emitList(sink, "todo " + w, boardGroups(board, "todo " + w, function () {
+                 return [openTickets(board.dir, w)]; }), false, mode !== "plain");
       return;
     }
     //  Direct addressing ALWAYS works — open or closed, the page renders.

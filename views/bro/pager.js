@@ -1246,6 +1246,12 @@ Pager.prototype._mouse = function (seq, press) {
   const hit = this._screenToByte(row, col);
   if (hit) {
     const target = this._uriAt(hit.hunk, hit.off);
+    //  TODO-007: an `O` carrying its COLOUR and no spell is a cell that says
+    //  explicitly "not a click target" (todo.js's already-staged count: info,
+    //  not a button).  That is NOT the same as no `O` at all: falling through
+    //  to the row re-followed the board banner and threw the reader back to the
+    //  top.  A dead cell is INERT — scroll kept, one plain word in the bar.
+    if (target === "") { this.message = "(nothing to click here)"; return; }
     //  BE-041: a click spell whose verb MUTATES (verbs/-tree: put/delete/…)
     //  shows no result screen — run it, then re-render the current view in
     //  place; a view spell (diff:/cat:/commit …) keeps the push-nav.

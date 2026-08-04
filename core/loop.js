@@ -42,6 +42,9 @@ const bro = require(_here + "/view/bro.js");
 //  JAB-030: the universal-pager edge — on a tty the run's hunk stream opens the
 //  bro Pager (hunksFromLog), instead of the plain renderHunkLog dump.
 const pager = require(_here + "/views/bro/pager.js");
+//  TODO-006: the [STATUS-019] rev tree — started BEFORE a pager-bound view
+//  renders, so the cold render's memos have a witness (see cli() below).
+const CACHE = require(_here + "/shared/cache.js");
 
 //  run(opts): seed -> build registry -> consume-while-append dispatch loop.
 //    opts.seedRows : [{verb, uri}]   the seed job list (argv lowered; JSQUE-004
@@ -475,6 +478,16 @@ function _cli(argv, opts2) {
   mintBe({ repo: repo, sink: sink, out: out, format: mode, force: force, flags: flags,
            verb: verb, context: context, now: ron.now() });
   const pargs = args.map(function (t) { return argline.scalar(t); });
+  //  JAB-030: is this run headed for the pager?  Decided HERE, before the view
+  //  computes — the same predicate the edge below re-reads.
+  const wantPager = io.isatty(1) && mode !== "tlv" && !opts2.reentry &&
+                    flags.indexOf("--plain") < 0;
+  //  TODO-006: the rev tree must be LIVE before the COLD render, or that render
+  //  witnesses nothing (cache.js ruling 3 hands out tokens with no watcher) and
+  //  the pager's FIRST re-fire — gritzko's click-a-ticket-then-BACKSPACE — misses
+  //  every row and pays the whole board again.  Views only: a mutation verb may
+  //  call pol.init(), which wipes the fd table under a live watcher ([JAB-032]).
+  if (wantPager && !_isMutation(verb)) { try { CACHE.start(io.cwd()); } catch (e) {} }
   res = run({
     repo: repo, require: require, out: out, sink: sink, flags: flags,
     mode: mode, args: args,
@@ -485,8 +498,6 @@ function _cli(argv, opts2) {
   //  PIPE/redirect (or --plain/--tlv, or an in-process re-entry) the plain dump.
   //  An in-process re-entry (opts2.reentry — bro's driveSpell capturing --tlv)
   //  must NEVER open a nested pager: it stays the plain/tlv dump it captures.
-  const wantPager = io.isatty(1) && mode !== "tlv" && !opts2.reentry &&
-                    flags.indexOf("--plain") < 0;
   if (wantPager) {
     //  Gather the run's hunks for the viewport: the content-view sink (cat/grep/
     //  spot/regex feed it) PLUS, if a columnar view (ls/status/refs) emitted
@@ -510,6 +521,8 @@ function _cli(argv, opts2) {
     //  BE-048: the launch arg's PATH folds in too — `jab cat f` + `:vim` edits f.
     if (hunks.length) { _openPager(hunks, _launchContext(args, repo)); return res; }
     //  Nothing to page (a self-paging verb already ran, or no output): done.
+    //  TODO-006: no pager loop, so no rev tree either (BRO-043's lifetime rule).
+    try { CACHE.stop(); } catch (e) {}
     return res;
   }
   //  Non-tty (pipe / --plain / --tlv / re-entry): the byte-parity plain dump.
