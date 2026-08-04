@@ -91,9 +91,9 @@ function wtCode(wt) { return sha.hashlet60FromBytes(sha1(utf8.Encode(wt))) >> 40
 
 //  The 3-char meta key VERBATIM at 6 bits/char — RON64 IS that alphabet, so
 //  `ron.decode` IS the packing (no hand-rolled char math).  null when the key
-//  is not the `[A-Z][a-z][a-z]` shape or would not round-trip.
+//  is not the `[A-Z][a-z][a-z0-9]` shape or would not round-trip.
 function codeOf(key) {
-  if (!/^[A-Z][a-z][a-z]$/.test(key)) return null;
+  if (!/^[A-Z][a-z][a-z0-9]$/.test(key)) return null;
   let c;
   try { c = ron.decode(key); } catch (e) { return null; }
   if (ron.encode(c) !== key || c > CODE_MAX) return null;
@@ -221,7 +221,8 @@ function scan(todo, hash) {
 //       PATCH-004, BRO-005) would answer `Fix:*` as if they were ticket meta.
 //  Each key at most once ([/meta/todo]): the FIRST occurrence wins.  `Due\: …`
 //  escapes a literal key and falls out of the `T` shape by itself.
-const KEYRE = /^([A-Z][a-z][a-z]):$/;
+//  TODO-009: 3rd char may be a digit (DOG-026 grammar) — `On1:`, `On2:` … .
+const KEYRE = /^([A-Z][a-z][a-z0-9]):$/;
 const INDENT = "    ";                       // the ONE legal indent (or none)
 
 function tokTag(w) { return String.fromCharCode(65 + ((w >>> 27) & 0x1f)); }
@@ -482,7 +483,7 @@ function sweep(ix, tickets, wt, opts) {
 function clauseOf(key, want) {
   const code = codeOf(key);
   if (code === null) throw "meta index: '" + key + "' is not a meta key " +
-                           "(three letters, capital first, like Sta or Who)";
+                           "(capital then two lowercase/digits, like Now or On1)";
   if (want === null || want === undefined || want === true)
     return { code: code, kind: "any" };
   if (typeof want === "object") {

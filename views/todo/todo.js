@@ -220,7 +220,7 @@ function pageFile(dir, key) {
 //  that is not a pair, so no body line can ever forge one.  The pairs the INDEX
 //  answers (`Now:`/`Sev:`) come off metaOf, not this scan; the scan is for what
 //  a packed row cannot give back — `Sub:`, a ticket CODE the render must read.
-const META_PAIR = /^([A-Z][a-z][a-z]): (.*)$/;
+const META_PAIR = /^([A-Z][a-z][a-z0-9]): (.*)$/;
 function pageHead(file) {
   const out = { title: "", meta: {} };
   const b = readBytes(file);
@@ -1344,8 +1344,8 @@ function parseArgs(argv) {
                  key + ":" + val.slice(0, val.indexOf(":")) + " " + key + ":" +
                  val.slice(val.indexOf(":") + 1) };
       if (metaidx.codeOf(key) === null)
-        return { err: "'" + key + ":' is not a meta key — a key is three letters," +
-                 " capital first, like Now: or Who:" };
+        return { err: "'" + key + ":' is not a meta key — a capital and two" +
+                 " lowercase letters or digits, like Now: or On1:" };
       filters.push({ key: key, val: val,
                      kind: val === "*" ? "any" : val === "" ? "none" : "eq" });
       toks.push(w);
