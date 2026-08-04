@@ -32,7 +32,7 @@ const render   = require("../../view/render.js");
 const navlib   = require("../../shared/nav.js");        // URI-011: full-URI nav helper
 const quadlib  = require("../../shared/quad.js");       // BRO-030: the quad model
 const quadrender = require("../../view/quadrender.js"); // BRO-030: quad row render
-const cache    = require("../../shared/cache.js");      // BRO-043: per-repo view cache
+const cache    = require("../../shared/cache.js");      // STATUS-019: the rev tree
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
 const discover = require("../../core/discover.js");
 const wtpath = discover.wtpath;
@@ -263,25 +263,27 @@ function emitRepo(repo, prefix, out, recurse, filter, quad, pins) {
   paint(gatherRepo(repo, recurse, filter, pins), out, prefix, quad);
 }
 
-//  BRO-043: ONE record per repo of this view's WHOLE output — the abstract ROW
-//  list (`{k:…}` entries), never painted bytes: theme, terminal width and the
-//  date column all render at PAINT time, so a hit re-renders for the geometry
-//  it is served under.  A SCOPED read (`status src/`) and a `--nosub` read
-//  carry an argument, so they cache NOTHING and recompute (per-arg keys are
-//  banned).  Off the pager (no live watcher) `take` is a straight call-through.
+//  STATUS-019: THIS VIEW's own memo, one record per repo of its WHOLE output —
+//  the abstract ROW list (`{k:…}` entries), never painted bytes: theme, width
+//  and the date column all render at PAINT time.  shared/cache.js only witnesses
+//  the fs, so the record carries the `rev` it was computed at.
+const MEMO = new Map();                                 // repo.wt → {rows, state, rev}
+
+//  A SCOPED read (`status src/`) and a `--nosub` read carry an argument, so they
+//  memoize NOTHING and recompute.  Off the pager (no live watcher) `rev` hands
+//  out a fresh token every time, so every read recomputes too (ruling 3).
+//  The `state` fingerprint STAYS beside the rev: a track tip / base / mount pin
+//  that moved with NO fs event under the repo (a post or fetch from a second wt
+//  on the same store) lives below `.be/`, which the watcher does not cover.
 function gatherRepo(repo, recurse, filter, pins) {
   if (filter || !recurse) return gatherAll(repo, recurse, filter, pins);
   const st = stateOf(repo, pins);
-  const fresh = function () {
-    return { rows: gatherAll(repo, recurse, filter, pins), state: st };
-  };
-  //  A track tip / base / mount pin that moved with NO fs event under the repo
-  //  (a post or fetch from a second wt on the same store): the `state`
-  //  fingerprint is the only witness, so a record whose state moved is DROPPED
-  //  before the read — a stale record is a miss, never a hit.
-  const had = cache.peek(repo, "status");
-  if (had && had.state !== st) cache.drop(repo);
-  return cache.take(repo, "status", fresh).rows;
+  const rv = cache.rev(repo.wt);
+  const had = MEMO.get(repo.wt);
+  if (had && had.rev === rv && had.state === st) return had.rows;
+  const rows = gatherAll(repo, recurse, filter, pins);
+  MEMO.set(repo.wt, { rows: rows, state: st, rev: rv });
+  return rows;
 }
 
 //  BRO-043: the validity fingerprint — every `status` input the WATCHER cannot

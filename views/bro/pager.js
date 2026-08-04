@@ -562,10 +562,10 @@ Pager.prototype._keyScroll = function (b) {
     case 0x2d: case 0x7f: case 0x08: if (this.popView()) this._refresh(); break;  // - / BS
     //  DIS-060: `R`/`r` REFRESH — re-run the current view's spell IN PLACE (no
     //  push), keeping the scroll pos, so a changed store/wt re-renders live.
-    //  BRO-043: refresh is the "I do not trust this screen" gesture, so it drops
-    //  the WHOLE view cache — hooked on the KEY, not `_refresh()` (back and
-    //  editor-exit call that too and need no drop; an edit fires its own event).
-    case 0x52: case 0x72: CACHE.dropAll(); this._refresh(); break;   // R/r refresh
+    //  STATUS-019: refresh is the "I do not trust this screen" gesture, so it
+    //  bumps the ROOT rev (every memo misses) — hooked on the KEY, not
+    //  `_refresh()` (back/editor-exit call that too; an edit fires its own event).
+    case 0x52: case 0x72: CACHE.bumpRoot(); this._refresh(); break;  // R/r refresh
     //  BRO-014: `w` flips THIS view soft-wrap ↔ no-wrap (rows() re-indexes on the
     //  new key, scroll kept); `W` writes it as the per-TYPE default (be.wrap) a
     //  later same-type view inherits.  SHORTCUTS (above) mirrors to the help: view.

@@ -552,6 +552,9 @@ function worklib() { return require("../work/work.js"); }
 //  `///be/` — resolving it once is the difference between 2 s and 40 s).
 //  A board with NO wt-having ticket opens nothing.
 let _wtix, _reg = null, _wtc = new Map(), _tips = new Map();
+//  STATUS-019: the ACROSS-run memos, keyed by the shared/cache.js rev of the wt
+//  (resp. the sub boundary) — a spot whose rev stands still cannot have changed.
+let _wtRev = new Map(), _subRev = new Map();
 function runReset() { _wtix = undefined; _reg = null; _wtc = new Map(); _tips = new Map(); }
 function runClose() { if (_reg) { try { _reg.close(); } catch (e) {} } _reg = null; }
 
@@ -593,15 +596,32 @@ function foldCounts(r, repo, log, k) {
 //  ONE classifyMerge per live mount, `.gitmodules` order, depth-first over the
 //  SAME recurse.walk spine those folds use (never a second mount scanner).  The
 //  COMMIT frame stays top-repo: ahbeh is the wt's own line, not its subs'.
+//  STATUS-019: a sub's tallies are a pure function of its own subtree, so a
+//  boundary whose rev stands still REPLAYS them instead of paying classifyMerge.
+function blankFold() {
+  return { un: { chg: 0, add: 0, del: 0 }, st: { chg: 0, add: 0, del: 0 }, staged: 0 };
+}
+function addFold(r, d) {
+  for (const c in d.un) r.un[c] += d.un[c];
+  for (const c in d.st) r.st[c] += d.st[c];
+  r.staged += d.staged;
+}
 function foldSubs(r, repo) {
   const recurse = require("../../core/recurse.js");
   const wtlog = require("../../shared/wtlog.js");
+  const cache = require("../../shared/cache.js");
   recurse.walk(repo, "", function (subRepo) {
+    const rv = cache.rev(subRepo.wt);
+    const had = _subRev.get(subRepo.wt);
+    if (had && had.rev === rv) { addFold(r, had.d); return; }
+    const d = blankFold();
     try {
       const sk = _reg.keeperFor(subRepo);
-      if (sk) foldCounts(r, subRepo, wtlog.open(subRepo), sk);
+      if (sk) foldCounts(d, subRepo, wtlog.open(subRepo), sk);
     } catch (e) { /* an unreadable sub simply tallies nothing */ }
-    foldSubs(r, subRepo);                       // then its grandchildren
+    foldSubs(d, subRepo);                       // then its grandchildren
+    _subRev.set(subRepo.wt, { rev: rv, d: d });
+    addFold(r, d);
   });
 }
 
@@ -614,6 +634,11 @@ function foldSubs(r, repo) {
 //  blank out — never an error row.
 function wtStat(w) {
   if (_wtc.has(w.dir)) return _wtc.get(w.dir);
+  //  STATUS-019: the wt's rev stands still ⇒ no file under it moved ⇒ the whole
+  //  read (classifyMerge + foldSubs) replays from the last run's record.
+  const rv = require("../../shared/cache.js").rev(w.dir);
+  const kept = _wtRev.get(w.dir);
+  if (kept && kept.rev === rv) { _wtc.set(w.dir, kept.stat); return kept.stat; }
   let r = null;
   try {
     const work = worklib();
@@ -648,6 +673,7 @@ function wtStat(w) {
       r.counts = _reg.counts(repo, (cur && cur.sha) || "", tip);
     }
   } catch (e) { r = null; }
+  _wtRev.set(w.dir, { rev: rv, stat: r });
   _wtc.set(w.dir, r);
   return r;
 }
