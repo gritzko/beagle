@@ -1061,7 +1061,15 @@ function leaf(row, ctx) {
   const existed = exists(full);
   //  Skip if the on-disk path already matches the target (preserves dirty bytes
   //  equal to the target; emits no row — native get only reports what moved).
-  if (existed && checkout.leafUnchanged(full, { kind: kind }, bytes)) return;
+  //  GET-059: the content test just PROVED these bytes are the new baseline
+  //  blob — the same truth claim the GET-049 stamp makes below — so stamp them
+  //  to the get row ts instead of discarding the verdict; the next status then
+  //  confirms them clean with no re-read.  Same guards as GET-049: symlinks
+  //  (setMtime follows the link) and `stampTs == null` legs stay unstamped.
+  if (existed && checkout.leafUnchanged(full, { kind: kind }, bytes)) {
+    if (g.stampTs != null && kind !== "l") trySetMtime(full, g.stampTs);
+    return;
+  }
 
   const regular = kind === "f" || kind === "x";
   const onDisk = existed && regular ? readWt(full) : null;
