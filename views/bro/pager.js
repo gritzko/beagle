@@ -34,6 +34,12 @@ const TICKET = require("shared/ticket.js");
 //  resident and verb-running (driveSpell re-enters cli() in-process), so the
 //  watcher opens here and dies here — a one-shot CLI never starts one.
 const CACHE = require("shared/cache.js");
+//  CI-004: the local build+test leg — `v` runs it in the background for the
+//  CURRENT CONTEXT worktree and the status bar carries its verdict.
+const CI = require("shared/ci.js");
+//  CI-004 (TODO 8): the GENERIC per-view marks a view leaves for the pager —
+//  `tick` (re-run me every ~ms) and `end` (show me at my last page).
+const VIEWMARK = require("shared/viewmark.js");
 
 //  BRO-007: the ONE source of truth for the scroll-mode key bindings — the
 //  `help:` view (views/help/help.js) imports this so its SHORTCUTS section can
@@ -51,6 +57,7 @@ const SHORTCUTS = [
   ["R / r", "refresh — re-run the current view (keep the scroll pos)"],
   ["w", "toggle soft-wrap / no-wrap for this view"],
   ["W", "set the default wrap mode for this view's type"],
+  ["v", "run this tree's default build+test in the background"],
   ["h", "this help screen"],
 ];
 
@@ -228,6 +235,11 @@ function Pager(fd, opts) {
 Pager.prototype.setHunks = function (hunks) {
   this.view = { hunks: hunks, rows: null, scroll: 0, cols: 0, wrap: true };
   this.view.wrap = wrapFor(this._verbUri().verb);
+  //  CI-004: TAKE the marks the view that just ran left — they belong to THIS
+  //  view object, so a stacked one keeps its own and only the top one is honoured.
+  const m = VIEWMARK.take();
+  this.view.tick = m.tick;                       // ms between unprompted re-runs
+  this.view.pinEnd = m.end;                      // follow the last page (a tail)
   this._updatePrevUri();                         // DIS-061: mirror the new view
 };
 
@@ -423,6 +435,9 @@ Pager.prototype.render = function () {
   const viewRows = rowsN - 1;                    // last row = status/address bar
   const rows = this.rows(cols);
   const v = this.view;
+  //  CI-004: a view marked `end` (a live TAIL) shows its LAST PAGE, so a growing
+  //  log stays on screen; any scroll key drops the pin and the user reads freely.
+  if (v.pinEnd) v.scroll = Math.max(0, rows.length - viewRows);
   if (v.scroll > rows.length - 1) v.scroll = Math.max(0, rows.length - 1);
   if (v.scroll < 0) v.scroll = 0;
 
@@ -490,6 +505,10 @@ Pager.prototype._statusLine = function (rows, scroll, viewRows, cols) {
     const rel = this._relToCtx(vu.uri);
     left = invite + (vu.verb || "") + (rel ? (vu.verb ? " " : "") + rel : "");
   }
+  //  CI-004: the `v` verdict badge for the context worktree — "" until a run
+  //  has happened, so a CI-less session's bar is byte-identical to before.
+  const ci = this._ciBadge();
+  if (ci) left = ci + "  " + left;
   if (this.message) left = this.message + "  " + left;
   //  BRO-007: `<pos>  h: help` (help pointer + scroll position) is RIGHT-aligned;
   //  the URI stays left, the gap between them padded to the terminal width.
@@ -503,6 +522,22 @@ Pager.prototype._statusLine = function (rows, scroll, viewRows, cols) {
   }
   return (this.color ? ESC + "[7m" + red : "") + this._fit(line, cols) +
          (this.color ? ESC + "[0m" : "");
+};
+
+//  CI-004: `v` — start the detected build+test in the CONTEXT worktree (the
+//  pager is arg-blind; the runner takes no per-press configuration).
+Pager.prototype._ciRun = function (ctx) {
+  let wt = null;
+  try { wt = CI.contextWt(ctx || this._context(), this.be && this.be.repo); }
+  catch (e) { wt = null; }
+  return (this.message = CI.run(wt).message);
+};
+
+//  CI-004: read the context worktree's CI verdict row and render its badge.  A
+//  bad context must never take the status bar down, so every throw is a "".
+Pager.prototype._ciBadge = function () {
+  try { return CI.badge(CI.row(CI.contextWt(this._context(), this.be && this.be.repo))); }
+  catch (e) { return ""; }
 };
 
 //  The 1-based source line number a byte offset falls on within a hunk's text
@@ -537,6 +572,9 @@ Pager.prototype._page = function () {
 Pager.prototype._keyScroll = function (b) {
   const v = this.view;
   this.message = "";
+  //  CI-004: a SCROLL key releases the `end` pin — the reader outranks the tail.
+  if (b === 0x6a || b === 0x6b || b === 0x20 || b === 0x62 ||
+      b === 0x67 || b === 0x47) v.pinEnd = false;
   switch (b) {
     case 0x71: this.quit = true; break;                 // q
     case 0x6a: v.scroll += 1; break;                    // j  down
@@ -578,6 +616,9 @@ Pager.prototype._keyScroll = function (b) {
     //  normal view (scrollable, `-`/BS backs out).  SHORTCUTS (above) is the
     //  single source the help: view mirrors; keep both in sync.
     case 0x68: this._runSpell("help:"); break;                       // h  help
+    //  CI-004: `v` starts the detected default build+test as a BACKGROUND job in
+    //  the context worktree; a re-press while it runs says so instead of respawning.
+    case 0x76: this._ciRun(); break;                                 // v  build+test
     default: break;
   }
 };
@@ -1111,7 +1152,9 @@ Pager.prototype._resume = function () {
 //  — never a re-derivation from view.uri (a verb call's uri is its CONTEXT, so
 //  deriving replayed a BARE verb: `:diff f` refreshed to the full-tree diff).
 //  A call-less view (the initial/launch view) keeps the _verbUri derivation.
-Pager.prototype._refresh = function () {
+//  CI-004: `quiet` is the UNPROMPTED re-run (the viewmark tick) — same path as
+//  `r`, but it leaves no "refreshed" note on a bar the user never touched.
+Pager.prototype._refresh = function (quiet) {
   const v = this.view;
   if (!v) return;
   const call = v.call;
@@ -1131,10 +1174,16 @@ Pager.prototype._refresh = function () {
   const scroll = v.scroll;
   try {
     const hunks = this.driveSpell ? this.driveSpell(spell, ctx2) : null;
+    //  CI-004: the re-run RESTATES its marks (taken whatever it emitted, so none
+    //  leak to the next view) — a job that settled since the last frame clears
+    //  the tick here and the pager goes quiet by itself.  The `end` pin is NOT
+    //  re-taken: once the reader has scrolled off the tail, it stays off.
+    const tick = VIEWMARK.take().tick;
     if (!hunks || hunks.length === 0) { this.message = "no hunks: " + spell; return; }
     v.hunks = hunks; v.rows = null; v.scroll = scroll;   // re-index, keep the pos
+    v.tick = tick;
     this._updatePrevUri();                       // DIS-061: re-drive IS a view change
-    this.message = "refreshed";
+    if (!quiet) this.message = "refreshed";
   } catch (e) { this.message = "err: " + String(e); }
 };
 
@@ -1381,6 +1430,20 @@ Pager.prototype._toggleMouse = function () {
   this.message = "mouse: " + (this.mouse ? "on" : "off");
 };
 
+//  CI-004: monotonic milliseconds (pol.now is ns); 0 where there is no pol —
+//  a clock-less driver simply never ticks.
+Pager.prototype._nowMs = function () {
+  try { return pol.now() / 1e6; } catch (e) { return 0; }
+};
+//  CI-004 (TODO 8): the deadline the TOPMOST view's `tick` mark sets, or 0 for
+//  "wait on the key" — the ONE place the pager consults the refresh mark.
+Pager.prototype._tickDue = function () {
+  const t = this.view && this.view.tick;
+  if (!t) return 0;
+  const now = this._nowMs();
+  return now ? now + t : 0;
+};
+
 //  ---- the run loop ----------------------------------------------------------
 //  Enter raw mode, paint, block-poll a key, repaint — until q.  cook + restore
 //  the cursor (and disable mouse) on EVERY exit path (try/finally) so a throw
@@ -1403,7 +1466,20 @@ Pager.prototype.run = function () {
       //  Block on a key: VMIN=0 VTIME=1 means io.read returns 0 on a 100ms
       //  timeout, so spin until a byte arrives (portable, no platform poll).
       let n = 0;
-      while (n === 0 && !this.quit) n = io.read(this.fd, rb);
+      //  CI-004: a background build+test finishing must reach the screen without
+      //  a keystroke — leave the 100ms key spin as soon as the verdict flips.
+      const ci0 = this._ciBadge();
+      //  CI-004 (TODO 8): ...and a LIVE view — one the drive marked `tick`
+      //  (viewmark.js; the ci log tail while its job runs) — RE-RUNS itself when
+      //  its ~1s deadline passes, the same path `r` takes.  A quiet view leaves
+      //  `due` 0: the wait is the key alone, exactly as before.
+      const due = this._tickDue();
+      while (n === 0 && !this.quit) {
+        n = io.read(this.fd, rb);
+        if (n !== 0) break;
+        if (due && this._nowMs() >= due) { this._refresh(true); break; }
+        if (this._ciBadge() !== ci0) break;
+      }
       //  Prepend any unfinished tail from the previous read, then feed; carry a
       //  still-unfinished mouse escape forward (a click can straddle reads).
       let data = rb.data();

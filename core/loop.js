@@ -519,7 +519,17 @@ function _cli(argv, opts2) {
     //  BE-046: the launch NAV CONTEXT (cwd AND the `//X` arg — be.context encodes
     //  both) rides into the pager, so a typed `:diff` inherits the worktree.
     //  BE-048: the launch arg's PATH folds in too — `jab cat f` + `:vim` edits f.
-    if (hunks.length) { _openPager(hunks, _launchContext(args, repo)); return res; }
+    //  CI-004: RECORD the LAUNCH invocation on the initial view, the way BRO-024
+    //  records every spell driven inside the pager — so `r` (and the viewmark
+    //  tick) replay THE VERB instead of deriving a spell from the banner, which
+    //  is not always one (the ci view's banner is a command line).  Space-free
+    //  args only: a quoted message would not survive the join; context "" is the
+    //  launch condition itself (same cwd, same tree).
+    const spellable = args.every(function (a) { return String(a).indexOf(" ") < 0; });
+    const call = verb && spellable
+               ? { verb: verb, spell: [verb].concat(args).join(" "), context: "" }
+               : null;
+    if (hunks.length) { _openPager(hunks, _launchContext(args, repo), call); return res; }
     //  Nothing to page (a self-paging verb already ran, or no output): done.
     //  TODO-006: no pager loop, so no rev tree either (BRO-043's lifetime rule).
     try { CACHE.stop(); } catch (e) {}
@@ -568,7 +578,7 @@ function _launchContext(args, repo) {
 //  edge).  Keystrokes come from the controlling terminal (/dev/tty so input
 //  still works when stdin is a data pipe — the bro.js pattern); a typed `:`
 //  spell re-runs the loop via bro's driveSpell (its OWN capture sink + queue).
-function _openPager(hunks, context) {
+function _openPager(hunks, context, call) {
   let fd = null, own = false;
   try { fd = io.open("/dev/tty", "rw"); own = true; } catch (e) { fd = null; }
   if (fd === null && io.isatty(0)) fd = 0;
@@ -581,6 +591,8 @@ function _openPager(hunks, context) {
                                     isMutation: _isMutation,
                                     isTty: _isTty });   // BE-047: editor verbs
     p.setHunks(hunks);
+    //  CI-004: the launch invocation (may be null — then refresh derives, as before).
+    if (call) p.view.call = call;
     p.run();
   } finally { if (own) { try { io.close(fd); } catch (e) {} } }
 }

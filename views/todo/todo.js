@@ -826,9 +826,13 @@ const KEYW = 18;
 //  exactly one button wide, buttons parted by a 1-cell gap; a frame DELIMITS
 //  its own columns, so nothing inside the brackets is ┄-filled (an absent slot
 //  is plain SPACES) and `┄` leaders live only OUTSIDE.
-//    FILE   `[ i nn nn nn  ✓]`  16 = 1 + 2 + (1+2)*4 + 1   (status ~ - + ci)
-//    COMMIT `[ ≡ nn nn]`        10 = 1 + 2 + (1+2)*2 + 1   (log, post, get)
-const FRAMEW_FILE = 16, FRAMEW_COMMIT = 10, BTNW = 2;
+//  CI-004 (ruling 2026-08-04): the STAGING surface ends in "test it" and the
+//  HISTORY surface ends in "commit it" — the ` ∞` run button takes the file
+//  frame's last slot and the post ` ✓` moves to the commit frame's last, which
+//  is why COMMIT grew 10 → 13.
+//    FILE   `[ i nn nn nn  ∞]`  16 = 1 + 2 + (1+2)*4 + 1   (status ~ - + run)
+//    COMMIT `[ ≡ nn nn  ✓]`     13 = 1 + 2 + (1+2)*3 + 1   (log, post, get, ci)
+const FRAMEW_FILE = 16, FRAMEW_COMMIT = 13, BTNW = 2;
 //  a DIVERGED `A⇄B` is ONE button over both ahbeh sub-slots and the gap between
 //  them — 5 cells, which `12⇄34` fills exactly (each side clamps to 2 digits).
 const PAIRW = BTNW * 2 + 1;
@@ -871,9 +875,11 @@ function btnSpell(ctx, spell, fg) {
 //  O that overrides it with the truecolor pair.  The face IS the whole button: every cell of
 //  it is washed and coloured and every cell of it clicks, so there is no dead
 //  padding to mis-hit.  A face is always BTNW cells (2 digits, or space+icon).
-function btnCell(parts, spans, off, face, name, ctx, spell) {
+//  CI-004: `tone` overrides the slot's own colour (the run button wears its
+//  verdict); the FALLBACK tag stays the slot's, so a lost O still reads as one.
+function btnCell(parts, spans, off, face, name, ctx, spell, tone) {
   off = span(parts, spans, off, face, btnTag(name));
-  return span(parts, spans, off, btnSpell(ctx, spell, BTN[name]), TAG_O);
+  return span(parts, spans, off, btnSpell(ctx, spell, tone || BTN[name]), TAG_O);
 }
 //  A DISABLED button is plain grey fg — no wash, no spell.
 function greyCell(parts, spans, off, face) { return span(parts, spans, off, face, TAG_D); }
@@ -924,13 +930,38 @@ function fileFrame(parts, spans, off, t) {
   off = span(parts, spans, off, " ", TAG_S);
   off = countSlot(parts, spans, off, "+", un.add, st.add, "add", ctx, "put +");
   off = span(parts, spans, off, " ", TAG_S);
-  //  The commit button: lit + spelled while ANY row is staged (WORK-008's
-  //  minted `KEY: <title>` message), blank otherwise (no grey ✓ — 2026-08-03).
-  if (s && s.staged > 0)
-    off = btnCell(parts, spans, off, FACE.ci, "ci", ctx,
-               "post '" + t.key + ": " + bareTitle(t.key, t.title) + "'");
-  else off = blankCell(parts, spans, off, BTNW);
-  return span(parts, spans, off, "]", TAG_D);
+  //  CI-004: the staging surface ends in TEST IT (the ✓ moved to the commit
+  //  frame) — always lit, since every wt can be asked to run its default stuff.
+  return span(parts, spans, runSlot(parts, spans, off, t), "]", TAG_D);
+}
+//  CI-004 (ruling 2026-08-04): the RUN button.  The spell is the PLAIN VIEW
+//  spell `ci` on the row's wt context — views/ci/ci.js, pushed by the pager
+//  through the ordinary machinery, no pager-local dispatch.  Face and tone come
+//  from the verdict MEMO, so the button un-tints itself the moment rev(wtDir)
+//  moves; an unreadable CI leg simply leaves the plain button.
+//  TODO 11: the FACE says in flight (live state); the COLOUR is the REMEMBERED
+//  verdict, read COLD off the status map — greyish never-ran, red failed, green
+//  ok — so a fresh pager over an untouched tree still shows the last result.
+function runSlot(parts, spans, off, t) {
+  let live = null, last = null;
+  try { const CI = require("../../shared/ci.js");
+        live = (CI.row(t.wt.dir) || {}).state || null;
+        last = CI.status(t.wt.dir); }
+  catch (e) { live = null; last = null; }
+  //  The wt is the ARG and the context is EMPTY — the ` i`/` ≡` view buttons'
+  //  own form, so the pushed view records `ci //<wt>` and `r`/back replay it.
+  return btnCell(parts, spans, off, live === "run" ? FACE.runb : FACE.run,
+                 "run", "", "ci //" + t.wt.name,
+                 live === "run" ? BTN.run : THEME.BTN_RUN[last || "none"]);
+}
+//  CI-004: the commit ✓, now the HISTORY surface's last slot.  Lit + spelled
+//  while ANY row is staged (WORK-008's minted `KEY: <title>` message), blank
+//  otherwise (no grey ✓ — 2026-08-03).
+function ciSlot(parts, spans, off, t, ctx) {
+  const s = t.stat;
+  if (!(s && s.staged > 0)) return blankCell(parts, spans, off, BTNW);
+  return btnCell(parts, spans, off, FACE.ci, "ci", ctx,
+                 "post '" + t.key + ": " + bareTitle(t.key, t.title) + "'");
 }
 //  TODO-005 r2: the COMMIT frame — `[ ≡ nn nn]`.  The ahbeh sub-slots are
 //  POSITIONAL and fixed: the POST position first, the GET position second, so a
@@ -953,14 +984,17 @@ function commitFrame(parts, spans, off, t) {
     off = arg === null ? greyCell(parts, spans, off, face)
         : btnCell(parts, spans, off, face, "patch", ctx,
                "patch" + (arg ? " '" + arg + "'" : ""));
-    return span(parts, spans, off, "]", TAG_D);
+    off = span(parts, spans, off, " ", TAG_S);
+    return span(parts, spans, ciSlot(parts, spans, off, t, ctx), "]", TAG_D);
   }
   if (a) off = btnCell(parts, spans, off, countFace("+", a), "post", ctx, "post");
   else off = blankCell(parts, spans, off, BTNW);
   off = span(parts, spans, off, " ", TAG_S);
   if (b) off = btnCell(parts, spans, off, countFace("-", b), "get", ctx, "get");
   else off = blankCell(parts, spans, off, BTNW);
-  return span(parts, spans, off, "]", TAG_D);
+  off = span(parts, spans, off, " ", TAG_S);
+  //  CI-004: ...and the history surface ends in COMMIT IT.
+  return span(parts, spans, ciSlot(parts, spans, off, t, ctx), "]", TAG_D);
 }
 
 //  TODO-005: the trailing DONE/DONT panel — ONE frame, TWO live buttons.  ` ✓`

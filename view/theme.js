@@ -161,7 +161,20 @@ const BTN = {
   //  TODO-005: the trailing DONE/DONT panel (hexes ruled 2026-08-03).
   done:   "#3bc43d",   // green — ` ✓` closes
   dont:   "#c2803d",   // ochre — ` ✗` shelves
+  //  CI-004 (ruling 2026-08-04): RUN this tree's default build+test, face ` ∞`.
+  //  Its own slot — `ci` above is the commit ✓, a different act entirely.  A
+  //  LANDED verdict tints the button instead: the add/del green and red, the
+  //  board's existing pass/fail vocabulary, never two more near-duplicate hexes.
+  run:    "#5883a7",   // steel blue — a run IN FLIGHT (the ` ⋯` face, `⋯ running`)
 };
+//  CI-004 (TODO 11, ruling 2026-08-04): the run button's THREE colours — the
+//  REMEMBERED verdict (shared/ci.js status map), and no dim/stale variants: the
+//  disabled grey's truecolor twin for never-ran, then failed, then ok.  While a
+//  job is in flight the button wears BTN.run — that is live state, not a verdict.
+const BTN_RUN = { none: "#808080", fail: "#e1351e", ok: "#1fe033" };
+//  The SAME two tones under the live layer's spelling (shared/ci.js row().state)
+//  — the ci view's PASS/FAIL footer reads these.
+const BTN_VERDICT = { green: BTN_RUN.ok, red: BTN_RUN.fail };
 //  The pale wash is DERIVED, never hand-picked: mix the tone toward white by
 //  BTN_PALE, once, for every button in every view.  Retune the factor here and
 //  all nine washes move together.  Memoized — a board asks per button per row.
@@ -187,17 +200,19 @@ function pale(hex) {
 //  DISABLED signal and must stay unambiguous.
 const BTN_TAG = { status: "V", ci: "W", log: "E", chg: "V", add: "W",
                   del: "M", patch: "V", post: "G", get: "A", go: "A",
-                  done: "W", dont: "M" };
+                  done: "W", dont: "M", run: "V" };
 
 //  The button FACES.  A face is exactly two cells: a two-digit count, or a
 //  space + an icon.  `ASCII` is the plain-terminal twin of each icon, kept
 //  beside it so a future ascii mode is a table swap, not a code change.
 //  `done` wears the HEAVY check (U+2714), not the light one the ci button
 //  carries — the panel's closing act is the emphatic one (gritzko 2026-08-03).
+//  CI-004: `run` has TWO faces — the idle ` ∞` (the endless loop of building and
+//  testing) and the IN-PROGRESS twin a running job wears (`runb`).
 const BTN_FACE = { status: " i", ci: " ✓", log: " ≡", go: "go",
-                   done: " ✔", dont: " ✗" };
+                   done: " ✔", dont: " ✗", run: " ∞", runb: " ⋯" };
 const BTN_FACE_ASCII = { status: " i", ci: " v", log: " =", go: "go",
-                         done: " v", dont: " x" };
+                         done: " v", dont: " x", run: " 8", runb: " ." };
 
 //  --- banner band (dog/THEME.h THEME_BANNER) ------------------------------
 //  Status/header band: black fg (256:0) on pale-yellow bg (256:230); native
@@ -268,6 +283,8 @@ module.exports = {
   QUAD_SGR: QUAD_SGR,
   DIFF_WASH: DIFF_WASH,
   BTN: BTN,
+  BTN_RUN: BTN_RUN,
+  BTN_VERDICT: BTN_VERDICT,
   BTN_PALE: BTN_PALE,
   BTN_TAG: BTN_TAG,
   pale: pale,
