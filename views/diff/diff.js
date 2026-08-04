@@ -202,36 +202,59 @@ function provList(w, toRev) {
   w.rewind(ID_EXP);
   while (w.next()) { const t = w.tok; if (!t.alive) killedByExp[t.off] = 1; }
   //  pass 2 (the emitted view): every token visible in from ∪ to, weave order.
-  const out = [];
+  const texts = [], flags = [];
   w.rewind(toRev);
   while (w.next()) {
     const t = w.tok, ins = w.blame(t.off);
     if (ins !== ID_FROM && !t.alive) continue;  // born AND died here → not emitted
-    const theirs = t.alive ? (ins === ID_EXP) : (killedByExp[t.off] === 1);
-    out.push({ txt: t.text.slice(), p: theirs });
+    texts.push(t.text.slice());
+    flags.push(t.alive ? (ins === ID_EXP) : (killedByExp[t.off] === 1));
   }
-  return out;
+  //  DIFF-021: byte-offset form — emit may SPLIT a weave atom (a dead `//` comes
+  //  out as two `/` toks), so a text zip desyncs; the byte extents always agree.
+  const m = texts.length, offs = new Uint32Array(m + 1), p = new Uint8Array(m);
+  let total = 0;
+  for (let i = 0; i < m; i++) { offs[i] = total; total += texts[i].length; }
+  offs[m] = total;
+  const body = new Uint8Array(total);
+  for (let i = 0; i < m; i++) { body.set(texts[i], offs[i]); if (flags[i]) p[i] = 1; }
+  return { body: body, offs: offs, p: p };
 }
 
 //  DIFF-016: mark ONE hunk record's toks against `prov` (of which the record is
-//  a contiguous window at or after `from`) — set bit 26 on every CHANGED token
-//  the EXPECTED layer owns.  Returns the cursor past the matched window; an
-//  unalignable record is left unmarked (renders as today, never wrong-coloured).
+//  a contiguous byte window at or after `from`) — set bit 26 on every CHANGED
+//  token the EXPECTED layer owns.  Returns the byte cursor past the matched
+//  window; an unalignable record is left unmarked (never wrong-coloured).
+//  DIFF-021: alignment is by BYTE OFFSETS, not token text — a token the emit
+//  split (or coalesced) against the cursor walk stays attributable.
 function markRecord(prov, from, text, toks) {
   const n = toks.length;
   if (!n) return from;
-  const lo = new Uint32Array(n);
-  for (let j = 0, p = 0; j < n; j++) { lo[j] = p; p = toks[j] & 0xffffff; }
-  for (let s = from; s + n <= prov.length; s++) {
+  const end = toks[n - 1] & 0xffffff;
+  const body = prov.body, offs = prov.offs, p = prov.p, m = p.length;
+  //  the record's bytes as a window of the emitted body, at or after `from`.
+  let s = -1;
+  for (let c = from; c + end <= body.length && s < 0; c++) {
     let hit = true;
-    for (let j = 0; j < n && hit; j++)
-      if (!bytesEq(prov[s + j].txt, text.subarray(lo[j], toks[j] & 0xffffff))) hit = false;
-    if (!hit) continue;
-    for (let j = 0; j < n; j++)
-      if (prov[s + j].p && ((toks[j] >>> 24) & 3)) toks[j] |= TOK_PATCHED;
-    return s + n;
+    for (let j = 0; j < end && hit; j++) if (body[c + j] !== text[j]) hit = false;
+    if (hit) s = c;
   }
-  return from;
+  if (s < 0) return from;
+  //  a changed token is PATCHED iff EVERY atom overlapping its byte span is
+  //  theirs — a mixed/uncovered span degrades to unmarked, never wrong-coloured.
+  let a = 0, lo = 0;
+  for (let j = 0; j < n; j++) {
+    const hi = toks[j] & 0xffffff;
+    while (a < m && offs[a + 1] <= s + lo) a++;
+    if (hi > lo && ((toks[j] >>> 24) & 3)) {
+      let all = a < m;
+      for (let b = a; b < m && offs[b] < s + hi; b++)
+        if (!p[b]) { all = false; break; }
+      if (all) toks[j] |= TOK_PATCHED;
+    }
+    lo = hi;
+  }
+  return s + end;
 }
 
 //  Render every record in a HUNK container through the diff:-scheme cursor.
