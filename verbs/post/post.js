@@ -354,7 +354,13 @@ function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
     throw refuse("no cur tip to advance `" + targetUri + "` to",
                  "no cur tip to advance to");
   const ctxUri = discover.navCwd(discover.ctxDir());
-  const rh = resolveHash(ctxUri, targetUri);            // step 5.5: target's base
+  let rh = resolveHash(ctxUri, targetUri);              // step 5.5: target's base
+  //  POST-036: a BARE `//X/sub` frames the PARENT (de-jure pin: rpath + otype
+  //  "commit") — re-resolve the ENTERED form for the sub's OWN base (get's DIS-072).
+  if (rh.rpath && rh.otype === "commit") {
+    const u0 = new URI(targetUri);
+    rh = resolveHash(ctxUri, URI.make(undefined, u0.authority, u0.path + "/"));
+  }
   const dir = discover.wtdir(targetUri);
   if (!dir) throw "WTNONE: `" + targetUri + "` anchors no local worktree";
   const target = discover.treeAt(dir);
@@ -371,8 +377,10 @@ function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
     throw refuse("`" + targetUri + "` already contains cur's tip",
                  "the target already contains cur's tip");
   if (v.rel === "unrelated")
-    throw refuse("`" + targetUri + "` is unrelated to cur",
-                 "the target is unrelated to cur");
+    //  POST-036: name the base actually compared — for a sub target that is the
+    //  SUB's own base, never the parent frame's.
+    throw refuse("`" + targetUri + "` (base #" + String(rh.chash).slice(0, 8) +
+                 ") is unrelated to cur", "the target is unrelated to cur");
   if (v.rel !== "behind") {
     //  diverged: the verdict spine already carries the ahead/behind rows —
     //  report the counts it provides (never a hand-rolled recount).
