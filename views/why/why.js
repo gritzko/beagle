@@ -29,7 +29,7 @@ const isFullSha = shalib.isFullSha;
 const WT_ID = weave.WT_SRC;
 //  WHY-001: working-tree file bytes (diff.js readWtFile twin), or undefined.
 function readWtFile(path) {
-  try { return io.mmap(path, "r").data().slice(); } catch (e) { return undefined; }
+  try { return io.mmap(path, "r").data(); } catch (e) { return undefined; }
 }
 
 //  WHY-001 tok32 here is JUST tag(5)|end(24) — the origin COLOUR+CLICK ride a

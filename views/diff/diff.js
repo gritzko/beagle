@@ -517,7 +517,7 @@ function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
 //  JS-069: only ever called for a NON-link leaf (symlinks route through
 //  readWtLink) — the caller gates by leaf kind so this never follows a link.
 function readWtFile(path) {
-  try { return io.mmap(path, "r").data().slice(); } catch (e) { return undefined; }
+  try { return io.mmap(path, "r").data(); } catch (e) { return undefined; }
 }
 
 //  JS-069: wt-side symlink read — lstat kind "lnk" → readlink; the target
