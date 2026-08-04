@@ -240,8 +240,11 @@ function isSlotArg(a) {
 //  narrow target) — NOT a bare-word commit message (`fix`, `base`).  The
 //  slot marker is a path separator: a leading `./`/`../`/`/` or an embedded
 //  `/`.  A separator-free word is a message and never narrows.
+//  URI-010: a bare `.`/`..` is a DIR reference too (`cd sub && post . '#m'`),
+//  separator-free yet never a message word.
 function isPathSlot(path) {
   if (!path) return false;
+  if (path === "." || path === "..") return true;
   return path[0] === "/" || path.indexOf("./") === 0 ||
          path.indexOf("../") === 0 || path.indexOf("/") >= 0;
 }
@@ -770,6 +773,9 @@ function postOne(info, ctx, row) {
   //  args.  Host (push) is the GIT-013 wire push (pushRemote).  Query (?branch)
   //  retargets the advance; Path (./path) narrows the commit — both REAL below.
   const slots = parseSlots(args);
+  //  URI-010: the Path slot resolves against the run's CONTEXT DIR once, here —
+  //  `cd sub && post . '#m'` narrows to `sub` (argRel keeps the dir-form).
+  if (slots.narrow) slots.narrow = discover.argRel(info, slots.narrow);
   const m = parseMessage(args, flags, slots.fragment);
   //  POST-027: a recursed sub's commit SPICES the parent's message with the
   //  sub mount path (`<msg> [dog]`, nested `[dog/abc]`) — POST.mkd row 2.
