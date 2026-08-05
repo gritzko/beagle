@@ -171,13 +171,19 @@ function registry() {
     for (const s of b) if (!a.has(s)) behind++;
     return { ahead: ahead, behind: behind };
   }
+  //  GRAF-003: land what this run walked — one flush per opened shard, at the
+  //  tail; best-effort (a read-only store degrades to mem-only, see graf.js).
+  function flushAll() {
+    for (const g of grafs.values()) if (g) { try { g.flush(); } catch (e) {} }
+  }
   //  DOG-027: work opens one keeper + graf PER SHARD; jab's pup handle table
   //  holds 32 slots, so the render must release every one when it is done.
   function close() {
     for (const k of keepers.values()) if (k) { try { k.close(); } catch (e) {} }
     for (const g of grafs.values()) if (g) { try { g.close(); } catch (e) {} }
   }
-  return { keeperFor: keeperFor, meta: meta, counts: counts, close: close };
+  return { keeperFor: keeperFor, meta: meta, counts: counts,
+           flushAll: flushAll, close: close };
 }
 
 //  --- the context tree (block 1's skeleton) -----------------------------------
@@ -828,8 +834,9 @@ function emitForest(sink, board, btns) {
     emitRows(sink, rows3, btns);
   }
 
-  //  DOG-027: release every shard's pup slots even on a thrown miss.
-  } finally { reg.close(); }
+  //  GRAF-003: persist the ahbeh pairs this run computed (once, at the tail —
+  //  a throw mid-render still lands them), then DOG-027-release the pup slots.
+  } finally { reg.flushAll(); reg.close(); }
 }
 
 //  --- the verb ----------------------------------------------------------------
