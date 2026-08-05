@@ -41,6 +41,8 @@ const join = pathlib.join, basename = pathlib.basename, safeRel = pathlib.safeRe
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
 //  URI-016: also the ONE `.be` pivot (repoFromBe/projectFromPath) for titles.
 const discover = require("../core/discover.js");
+const uriarg   = require("./uri.js");
+const gitmodules = require("./gitmodules.js");
 const wtpath = discover.wtpath;
 const isFullSha = sha.isFullSha;
 
@@ -88,7 +90,7 @@ function writeAnchor(anchorPath, redirect, track) {
 //  rewrites too) but was recorded verbatim as ingest's `refs` origin row, which
 //  the JS-103 ULOG write gate refuses (SUBMOUNT `malformed uri`, pack-only shard).
 function gitmodulesUrl(wt, subpath) {
-  return require("./uri.js").fromGit(require("./gitmodules.js").urlOf(wt, subpath));
+  return uriarg.fromGit(gitmodules.urlOf(wt, subpath));
 }
 
 //  SUBS-047: the official url for `subpath` off the NEAREST enclosing

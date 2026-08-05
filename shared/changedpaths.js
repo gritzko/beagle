@@ -10,6 +10,7 @@
 "use strict";
 
 const shalib = require("./util/sha.js");
+const ingest = require("./ingest.js");
 const isFullSha = shalib.isFullSha;
 const frameSha  = shalib.frameSha;
 
@@ -96,7 +97,7 @@ function changedObjectsCommits(fromReader, fromCommit, toReader, toCommit, cb) {
 //  store.js reads on-disk packs with); a one-shot sha->offset scan indexes every
 //  record so commitTree/readTree(Recursive) resolve without touching the keeper.
 function packReader(packBytes) {
-  const log = require("./ingest.js").packLogBytes(packBytes);   // strip trailer
+  const log = ingest.packLogBytes(packBytes);                   // strip trailer
   const pk = git.pack.over(log);
   pk.buffer.watermark = log.byteLength;
   //  One scan: full-sha -> offset for every record (all types, not just commit).

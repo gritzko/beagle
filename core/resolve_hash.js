@@ -310,9 +310,12 @@ function resolve_hash(context_uri, uri) {
            otype: o.otype, ohash: o.ohash };
 }
 
-module.exports = { resolve_hash: resolve_hash,
+//  CODE-028: FILL the exports object, never REPLACE it — discover.js requires
+//  this module at top level, and a fresh literal here would freeze its handle.
+Object.assign(module.exports, {
+                   resolve_hash: resolve_hash,
                    projectRoot: projectRoot, workRoot: workRoot,
                    todoRoot: todoRoot, metaRoot: metaRoot,
                    //  URI-016: step 4 + the layout — THE `.be` climb lives here
                    //  and nowhere else; discover.treeAt delegates to treeAt.
-                   treeAt: treeAt, topOf: topOf };
+                   treeAt: treeAt, topOf: topOf });

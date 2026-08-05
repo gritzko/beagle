@@ -58,7 +58,13 @@ const isBinary = require("../../views/diff/diff.js").isBinary;  // GET-056: D5 g
 //  GET-058: the ONE decision table (rows = track vs root, cols = wt vs base) —
 //  the flat D5 leaf and shared/checkout.js apply() index the SAME 13 cells.
 const quadlib = require("../../shared/quad.js");
+//  CODE-028: fetchleg requires get.js back, so the handle must be published
+//  BEFORE that require; fetchleg FILLS its exports, so this one is safe too.
+module.exports = get;
+const fetchleg = require("../patch/fetchleg.js");
 const CH = quadlib.CH;
+const recurselib = require("../../core/recurse.js");
+const quadrender = require("../../view/quadrender.js");
 const join = pathlib.join, dirname = pathlib.dirname;
 //  BE-011: wtJoin confines a wt-open to the tree (NAVESCAPE on a `..` climb);
 //  merge/split compose in-tree paths over segments (no raw `a + "/" + b`).
@@ -509,8 +515,7 @@ function handleWtSeed(uri, ctx) {
 //  GET-047 / GET.mkd 1.3+2.1: cross-source update — fetch the target closure
 //  into the cell's OWN shard (landTip), gate on ancestry, re-tie, ONE updater.
 function crossUpdate(ctx, uri, tip, cell, srcStore, srcProj, wtsrc) {
-  //  In-body require: fetchleg requires get.js back (the discover.js _rh pattern).
-  require("../patch/fetchleg.js").landTip(cell, srcStore, srcProj, tip);
+  fetchleg.landTip(cell, srcStore, srcProj, tip);
   const k = store.open(cell.storePath, cell.project);
   const oldTip = oldTipOf(cell.bePath);
   //  GET-047: no common ancestor = ANOTHER project in the cell's clothes —
@@ -1252,7 +1257,7 @@ function subMountRow(g, rel, pin, m, out) {
 //  an undeclared 160000 gitlink (e.g. the `be` entry) is never mounted/recursed.
 function isDeclaredSub(wt, subpath) {
   if (submount.gitmodulesUrl(wt, subpath)) return true;
-  const decl = require("../../core/recurse.js").gitmodulesOrder(wt);
+  const decl = recurselib.gitmodulesOrder(wt);
   for (const p of decl) if (p === subpath) return true;
   return false;
 }
@@ -1455,8 +1460,6 @@ function flushGet(ctx) {
 //  ALL commit rows print, file rows filter to the paths this get wrote/removed.
 function quadReport(g, out) {
   try {
-    const quadlib = require("../../shared/quad.js");
-    const qr = require("../../view/quadrender.js");
     const info = be.treeAt(g.wt);
     const model = quadlib.quadOf(info, wtlog.open(info), g.k);
     const touched = {};
@@ -1464,9 +1467,9 @@ function quadReport(g, out) {
     //  BRO-030: plain bakes the ASCII canon; else tok-tagged rows (pager).
     const plain = ambient.format() === "plain";
     for (const c of model.commits)
-      plain ? out.raw(qr.commitRow(c, false)) : out.quadCommit(c);
+      plain ? out.raw(quadrender.commitRow(c, false)) : out.quadCommit(c);
     for (const r of model.rows)
-      if (touched[r.path]) plain ? out.raw(qr.fileRow(r, false)) : out.quadRow(r);
+      if (touched[r.path]) plain ? out.raw(quadrender.fileRow(r, false)) : out.quadRow(r);
   } catch (e) { warn("be get: BRO-030 quad report failed: " + e); }
 }
 
@@ -1550,4 +1553,3 @@ get.mergeWorktreeTo = mergeWorktreeTo;   // POST-026: post's //WT target reuse
 //  worktree→store redirect resolver (GET-038) — no second URI/store parse.
 get.parseRemote = parseRemote;
 get.resolveLocalSource = resolveLocalSource;
-module.exports = get;

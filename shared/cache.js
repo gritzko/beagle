@@ -40,6 +40,9 @@
 "use strict";
 
 const wtpath = require("../core/discover.js").wtpath;
+//  CODE-028: classify.js requires this module back; both FILL their exports.
+const ignorelib = require("./util/ignore.js");
+const classify = require("./classify.js");
 
 //  BRO-043: `jsrc` is a symlink to `.`, so `<root>/shared/cache.js` and
 //  `<root>/jsrc/shared/cache.js` load as TWO module instances of one file.  ALL
@@ -155,8 +158,8 @@ function arm(wt) {
   if (S.armed[wt] !== undefined && S.armed[wt] === S.spot[wt]) return;
   armDir(wt);                                        // the spot itself first
   if (S.spot[wt] === undefined) return;              // unwatchable: no rev at all
-  const ignore = require("./util/ignore.js").load(wt);
-  const w = require("./classify.js").wtWalk(wt, ignore);
+  const ignore = ignorelib.load(wt);
+  const w = classify.wtWalk(wt, ignore);
   for (const nm of w.names) {
     if (nm[nm.length - 1] !== "/") continue;         // dirs only
     const rel = nm.slice(0, -1);
@@ -204,5 +207,8 @@ function stats() {
            root: S.root };
 }
 
-module.exports = { start: start, stop: stop, rev: rev, poll: poll,
-                   bumpRoot: bumpRoot, stats: stats, takeWalk: takeWalk };
+//  CODE-028: FILL the exports object, never REPLACE it — classify.js requires
+//  this module at top level and would freeze an empty handle.
+Object.assign(module.exports, {
+                   start: start, stop: stop, rev: rev, poll: poll,
+                   bumpRoot: bumpRoot, stats: stats, takeWalk: takeWalk });

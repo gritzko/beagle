@@ -27,6 +27,7 @@
 const path = require("../shared/util/path.js");   // BE-026: wtJoin confinement
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
 const wtpath = require("./discover.js").wtpath;
+const gitmodules = require("../shared/gitmodules.js");
 
 //  YES iff `<wt>/<subpath>/.be` is a regular file (a live mount).
 //  Mirrors SNIFFSubIsMount: only a mounted sub is recursed.
@@ -53,7 +54,7 @@ function isMount(wtRoot, subpath) {
 //  (the order native recurses; KEEPSubsAt drives SUBSu8sParse top-to-bottom).
 //  PUT-004: delegates to the shared reader (was a copy-pasted git-config parser).
 function gitmodulesOrder(wtRoot) {
-  return require("../shared/gitmodules.js").paths(wtRoot);
+  return gitmodules.paths(wtRoot);
 }
 
 //  URI-aware join of a path under a sub prefix (JAB-004) — empty prefix is a

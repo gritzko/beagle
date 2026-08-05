@@ -17,18 +17,17 @@
 //  ([/wiki/URI] §URI->hash step 5).  Only parents/fork/LCA/scope live here.
 "use strict";
 
-const shalib = require(__dirname + "/util/sha.js");   // JSQUE-016: -> shared/util/
+const shalib = require("./util/sha.js");   // JSQUE-016: -> shared/util/
+const rh = require("../core/resolve_hash.js");
+const discover = require("../core/discover.js");
 const isFullSha = shalib.isFullSha;
 
 //  URI-016: THE URI->commit step.  resolve_hash checks the object IS a commit on
 //  every rung of step 5, so `#hashlet` (5.2) and `?hashlet` (5.4) resolve here
-//  exactly as `type:` already sees them.  LAZY require: resolve_hash pulls
-//  shared/*, and a top-level require from shared/ would close that cycle.
+//  exactly as `type:` already sees them.
 //  Returns the 40-hex `chash`, or undefined — the caller owns the refusal, so
 //  resolve_hash's ok64 codes never leak into the view's PATCHFAIL dialect.
 function chashOf(pin) {
-  const rh = require(__dirname + "/../core/resolve_hash.js");
-  const discover = require(__dirname + "/../core/discover.js");
   const ctx = discover.navCwd(discover.ctxDir());   // URI-016: derived off be.context
   let r; try { r = rh.resolve_hash(ctx, pin); } catch (e) { return undefined; }
   return r && isFullSha(r.chash) ? r.chash : undefined;

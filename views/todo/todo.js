@@ -121,6 +121,18 @@ const ticket  = require("../../shared/ticket.js");    // BRO-012: shared key sca
 const SPELL   = require("../../shared/spell.js");      // BE-054: O-spell codec
 const metaidx = require("../../shared/metaidx.js");    // TODO-003: the meta index
 const CACHE   = require("../../shared/cache.js");      // STATUS-019: the rev tree
+//  CODE-028: work.js requires this module back, so the handle must be published
+//  BEFORE that require; work.js publishes ITS handle the same way.
+module.exports = todo;
+const worklib = require("../work/work.js");
+const wtlog   = require("../../shared/wtlog.js");
+const mtimeidx = require("../../shared/mtimeidx.js");
+const lastcommit = require("../../shared/lastcommit.js");
+const classify = require("../../shared/classify.js");
+const recurse = require("../../core/recurse.js");
+const rh      = require("../../core/resolve_hash.js");
+const store   = require("../../shared/store.js");
+const CI      = require("../../shared/ci.js");
 
 const EXTS = ["mkd", "md", "txt"];        // this board is .mkd-first
 const CAP = 1 << 20;                       // 1 MiB page cap (tickets are small)
@@ -398,13 +410,13 @@ function freshRepo(board) {
   if (_fresh !== null) return _fresh;
   _fresh = false;
   let t;
-  try { t = require("../../core/resolve_hash.js").treeAt(board.dir); }
+  try { t = rh.treeAt(board.dir); }
   catch (e) { return _fresh; }
   if (!t || !t.wt) return _fresh;
   let k, wtl, tip;
   try {
-    k = require("../../shared/store.js").open(t.storePath, t.project);
-    wtl = require("../../shared/wtlog.js").open(t);
+    k = store.open(t.storePath, t.project);
+    wtl = wtlog.open(t);
     tip = (wtl.curTip() || {}).sha || "";
   } catch (e) { return _fresh; }
   if (!/^[0-9a-f]{40}$/.test(tip)) return _fresh;
@@ -439,9 +451,6 @@ function tipBlob(f, rel) {
 function dateRows(board, rows) {
   const f = freshRepo(board);
   if (!f || !rows.length) return rows;
-  const mtimeidx = require("../../shared/mtimeidx.js");
-  const lastcommit = require("../../shared/lastcommit.js");
-  const classify = require("../../shared/classify.js");
   const pfx = f.t.wt + "/";
   const keys = new Set();
   for (const r of rows) {
@@ -566,10 +575,9 @@ function listTopics(dir) {
 }
 
 //  --- the wt side (TODO-005) --------------------------------------------------
-//  views/work/work.js requires THIS module (WORK-010 ticket titles), so the
-//  reverse edge is a LAZY require — a top-level one would hand work.js a
-//  half-built todo.js.  Everything below rides work's own machinery verbatim.
-function worklib() { return require("../work/work.js"); }
+//  views/work/work.js requires THIS module (WORK-010 ticket titles); the
+//  reverse edge is the top-level `worklib` handle above (CODE-028).
+//  Everything below rides work's own machinery verbatim.
 
 //  Per-render-run state (the TODO-001 memo discipline, reset by every run):
 //  the wt index, work's shard registry (keeper+graf opened ONCE per shard), the
@@ -605,7 +613,7 @@ function runClose() { if (_reg) { try { _reg.close(); } catch (e) {} } _reg = nu
 function wtIndex() {
   if (_wtix !== undefined) return _wtix;
   _wtix = new Map();
-  const work = worklib();
+  const work = worklib;
   let wd = null; try { wd = work.workDir(); } catch (e) { wd = null; }
   if (wd) for (const nm of work.listWork(wd.dir)) {
     const k = ticketKey(nm);
@@ -625,7 +633,6 @@ const ST_COL = { put: "chg", "new": "add", mov: "add", del: "del", rmv: "del" };
 
 //  TODO-005 r2: fold ONE repo's classify counts into the frame's tallies.
 function foldCounts(r, repo, log, k) {
-  const classify = require("../../shared/classify.js");
   const c = classify.classifyMerge(repo, log, k, {}).counts;
   for (const b in UN_COL) r.un[UN_COL[b]] += c[b] || 0;
   for (const b in ST_COL) { const n = c[b] || 0; r.st[ST_COL[b]] += n; r.staged += n; }
@@ -648,11 +655,8 @@ function addFold(r, d) {
   r.staged += d.staged;
 }
 function foldSubs(r, repo) {
-  const recurse = require("../../core/recurse.js");
-  const wtlog = require("../../shared/wtlog.js");
-  const cache = require("../../shared/cache.js");
   recurse.walk(repo, "", function (subRepo) {
-    const rv = cache.rev(subRepo.wt);
+    const rv = CACHE.rev(subRepo.wt);
     const had = _subRev.get(subRepo.wt);
     if (had && had.rev === rv) { addFold(r, had.d); return; }
     const d = blankFold();
@@ -683,10 +687,10 @@ function tipsOf(w) {
   if (e !== undefined) return e;
   e = { tips: "?", repo: null, log: null, cur: null, att: null, tip: "" };
   try {
-    const work = worklib();
+    const work = worklib;
     if (!_reg) _reg = work.registry();
     e.repo = be.treeAt(w.dir);
-    e.log = require("../../shared/wtlog.js").open(e.repo);
+    e.log = wtlog.open(e.repo);
     e.cur = e.log.curTip();
     e.att = e.log.attachedBranch();
     const tk = (e.att.uriTrack && e.att.track) || "";
@@ -956,8 +960,7 @@ function fileFrame(parts, spans, off, t) {
 //  ok — so a fresh pager over an untouched tree still shows the last result.
 function runSlot(parts, spans, off, t) {
   let live = null, last = null;
-  try { const CI = require("../../shared/ci.js");
-        live = (CI.row(t.wt.dir) || {}).state || null;
+  try { live = (CI.row(t.wt.dir) || {}).state || null;
         last = CI.status(t.wt.dir); }
   catch (e) { live = null; last = null; }
   //  The wt is the ARG and the context is EMPTY — the ` i`/` ≡` view buttons'

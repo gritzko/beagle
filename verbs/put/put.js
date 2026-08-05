@@ -55,6 +55,7 @@ const pathlib = require("../../shared/util/path.js");
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
 //  resolve-backed, context-confined replacement for the old wtJoin.
 const discover = require("../../core/discover.js");
+const gitmodules = require("../../shared/gitmodules.js");
 const wtpath = discover.wtpath;
 const join = pathlib.join;
 
@@ -622,7 +623,7 @@ function stageSubBump(parRepo, seg, subRepo, out, disp) {
 
 //  PUT-011: the declared submodule paths of a wt (shared/gitmodules.js).
 function gitmodulesPaths(wtRoot) {
-  try { return require("../../shared/gitmodules.js").paths(wtRoot); }
+  try { return gitmodules.paths(wtRoot); }
   catch (e) { return []; }
 }
 

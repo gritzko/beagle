@@ -8,16 +8,17 @@
 "use strict";
 
 const pathlib = require("./util/path.js");
+//  CODE-028: resolve_hash never requires this module — no cycle to dodge.
+const rh = require("../core/resolve_hash.js");
 
 //  root() → the project root abs path, or null when no `.be` anchors one.
 //  A pure alias of THE one `.be` climber ([/wiki/URI] step 1): the TOPMOST dir
 //  carrying a store-resolving `.be`, still lower than $BE_ROOT (default $HOME),
 //  climbed from cwd.  No start dir — the root is a property of the run, not of
 //  a caller's dir.  projectRoot() caches its own climb on `be.projectRootDir`;
-//  there is no second cache here.  The require stays LAZY: resolve_hash pulls
-//  in discover, and a top-level require risks a cycle.
+//  there is no second cache here.
 function root() {
-  return require("../core/resolve_hash.js").projectRoot();
+  return rh.projectRoot();
 }
 
 //  resolve(arg) → { root, tree, rel, abs } for a `//WORK/path/file` URI or a
@@ -37,7 +38,7 @@ function resolve(arg) {
     throw "NAVESCAPE: bad project authority //" + host;
   //  URI-016: workRoot(), never join(r, "work") — the `work` segment is spelled
   //  in ONE place (core/resolve_hash.js), and this was a third reading of it.
-  const tree = host ? pathlib.join(require("../core/resolve_hash.js").workRoot(), host) : r;
+  const tree = host ? pathlib.join(rh.workRoot(), host) : r;
   const rel = pathlib.resolveInTree("", u.path !== undefined ? u.path : s);
   return { root: r, tree: tree, rel: rel,
            abs: rel ? pathlib.join(tree, rel) : tree };

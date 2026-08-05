@@ -5,7 +5,7 @@
 //  URI-016: this file no longer CLIMBS.  There is ONE `.be` climber, in
 //  core/resolve_hash.js (climb/anchors), serving both [/wiki/URI] step 1
 //  (projectRoot: the TOPMOST anchor) and step 4 (treeAt: the NEAREST).
-//  projectRoot()/workRoot()/metaRoot()/todoRoot()/treeAt() here are lazy-require
+//  projectRoot()/workRoot()/metaRoot()/todoRoot()/treeAt() here are
 //  DELEGATIONS onto it — the names verbs/views call.  topWt()/launchTop()/
 //  rootTop() are GONE: the outermost tree and the bare `//` are fixed by the
 //  project layout, so they are arithmetic on projectRoot()/workRoot(), not walks.
@@ -28,6 +28,9 @@
 
 const pathlib = require("../shared/util/path.js");   // JSQUE-016: be.js -> core/discover.js
 const ulog = require("../shared/ulog.js");
+//  CODE-028: THE climber, required at top level.  The cycle (resolve_hash
+//  requires this module) is safe: both sides FILL module.exports, never replace it.
+const rh = require("./resolve_hash.js");
 const join = pathlib.join, dirname = pathlib.dirname;
 
 const BE = ".be";
@@ -134,7 +137,7 @@ function resolveAnchor(wt) {
 //  only because verb/view call sites spelled it `be.find`.  They now say what they
 //  mean: `be.treeAt`, the step-4 routine itself (core/resolve_hash.js), which
 //  shares climb()/anchors() with step 1's projectRoot() — one chain, one anchor
-//  test, one limit.  The lazy delegation below is the AMBIENT handle (core/loop.js
+//  test, one limit.  The delegation below is the AMBIENT handle (core/loop.js
 //  Object.assign's this module onto `be`); the record it returns carries the spec's
 //  fields PLUS the anchor itself ({root, wt, bePath, storePath, project}).
 //  Two behaviours CHANGED vs the old find(), both toward the spec:
@@ -145,10 +148,6 @@ function resolveAnchor(wt) {
 //    * the limit is now break-THEN-probe: an anchor must be "still lower than
 //      $BE_ROOT", so $BE_ROOT/.be — the STORE — is no longer a worktree.  That is
 //      what shieldLike was really refusing; the limit says it directly.
-
-//  URI-016: the lazy handle on THE climber.  resolve_hash requires THIS module, so
-//  the require must stay in-body — a top-level one closes a load cycle.
-function _rh() { return require("./resolve_hash.js"); }
 
 //  URI-016: topWt(wt) DELETED — it climbed past submodules by re-probing every
 //  ancestor with find(), and drew the work/ boundary with a SECOND spelling of the
@@ -166,7 +165,7 @@ function _rh() { return require("./resolve_hash.js"); }
 //  `$SRC_ROOT/work`, so every caller either assumed the `/work` or dirname'd it
 //  back off.  Callers now say which they mean: projectRoot() ($SRC_ROOT) or
 //  workRoot() ($SRC_ROOT/work).  Both live in core/resolve_hash.js — THE one
-//  `.be` climber.  Lazy require: resolve_hash requires this module.
+//  `.be` climber.
 //  URI-016: todoRoot() DELETED here too — it read `$TODO_ROOT`, ran its OWN
 //  find()/topWt() climb, and returned a LIST of candidate roots to probe.  All
 //  three are gone: the project root CAN NOT be an env var (an env var that
@@ -176,13 +175,13 @@ function _rh() { return require("./resolve_hash.js"); }
 //  URI-016: step 4 (the NEAREST anchor), the ambient handle verbs/views call as
 //  `be.treeAt`.  `from`/`topDir` ride through for resolve_hash.frame's re-anchor.
 function treeAt(path, from, topDir) {
-  return require("./resolve_hash.js").treeAt(path || io.cwd(), from, topDir);
+  return rh.treeAt(path || io.cwd(), from, topDir);
 }
 
-function projectRoot() { return require("./resolve_hash.js").projectRoot(); }
-function workRoot()    { return require("./resolve_hash.js").workRoot(); }
-function metaRoot()    { return require("./resolve_hash.js").metaRoot(); }
-function todoRoot()    { return require("./resolve_hash.js").todoRoot(); }
+function projectRoot() { return rh.projectRoot(); }
+function workRoot()    { return rh.workRoot(); }
+function metaRoot()    { return rh.metaRoot(); }
+function todoRoot()    { return rh.todoRoot(); }
 
 //  BE-030: the tree NAME comes from `context` ALONE — its `.host` (a URI object,
 //  the nav scope a session STARTS with, navCwd(cwd) carrying BOTH the `//name`
@@ -249,7 +248,7 @@ function resolve(context, rel) {
     //  URI-016: `//` = the PROJECT ROOT — [/wiki/URI] step 2 says `///mtrel` IS
     //  `$SRC_ROOT/mtrel`, so there is nothing to search for and no launch-tree
     //  guess: no root means no repo, which is PROJNONE.
-    const wt = _rh().projectRoot();
+    const wt = rh.projectRoot();
     if (!wt) throw "PROJNONE: no project root above " + io.cwd() + " — no repo";
     return sub ? join(wt, sub) : wt;
   }
@@ -278,7 +277,7 @@ function wtdir(uriStr) {
   if (host === "" || host === ".") {
     //  BE-037: `//[/path]` rides resolve like `//name` — the project root, path
     //  honoured; a repo-less cwd is the miss (null), NAVESCAPE still propagates.
-    if (!_rh().projectRoot()) return null;
+    if (!rh.projectRoot()) return null;
     return resolve("//" + host, u.path || "");
   }
   //  BE-030: compose + CONFINE via resolve(context, rel).  The nav URI's path is
@@ -291,7 +290,7 @@ function wtdir(uriStr) {
   //  ancestor store treeAt() walked up to).  `dir` is `..`-free now, so this prefix
   //  compare is a sound EXISTENCE check, no longer a (broken) security boundary.
   const top = join(workRoot(), host);        // step 2: $SRC_ROOT/work/WT
-  let repo; try { repo = _rh().treeAt(dir); } catch (e) { return null; }
+  let repo; try { repo = rh.treeAt(dir); } catch (e) { return null; }
   if (!repo || (repo.wt !== top && repo.wt.indexOf(top + "/") !== 0)) return null;
   return dir;
 }
@@ -302,11 +301,11 @@ function wtdir(uriStr) {
 //  path = `dir` under `wt`.  "" when the dir is in no known tree (repo-less cwd).
 function navCwd(dir) {
   const d = dir || io.cwd();
-  let repo; try { repo = _rh().treeAt(d); } catch (e) { return ""; }
+  let repo; try { repo = rh.treeAt(d); } catch (e) { return ""; }
   if (!repo || !repo.wt) return "";
   //  Name off the TOP wt (past submodules); the sub-path crosses into the
   //  submodule (`//name/sub/inner`) — see [SUBS-045] joinPrefix.
-  const top = _rh().topOf(repo.wt) || repo.wt;
+  const top = rh.topOf(repo.wt) || repo.wt;
   const work = workRoot();
   //  The project root itself has no `//name` address — its context is the bare
   //  `//`; a worktree slices its name off $SRC_ROOT/work.
@@ -328,7 +327,7 @@ function navCwd(dir) {
 function navTree(navStr) {
   let d; try { d = wtdir(navStr); } catch (e) { return ""; }
   if (!d) return "";
-  let repo; try { repo = _rh().treeAt(d); } catch (e) { return ""; }
+  let repo; try { repo = rh.treeAt(d); } catch (e) { return ""; }
   if (!repo || !repo.wt) return "";
   return navCwd(repo.wt);
 }
@@ -342,7 +341,7 @@ function navTree(navStr) {
 //  to cd to"; no io.chdir binding needed.
 function contextCwd() {
   if (typeof be !== "undefined" && be.repo && be.repo.wt) return be.repo.wt;
-  try { return _rh().treeAt(io.cwd()).wt; } catch (e) { return io.cwd(); }
+  try { return rh.treeAt(io.cwd()).wt; } catch (e) { return io.cwd(); }
 }
 
 //  URI-016: ctxDir() — the run's context DIR, DERIVED from the ONE stored fact
@@ -356,7 +355,7 @@ function ctxDir() {
   if (!c) return io.cwd();
   let d; try { d = wtdir(c); } catch (e) { return io.cwd(); }   // NAVESCAPE → cwd
   if (!d) return io.cwd();
-  let repo; try { repo = _rh().treeAt(d); } catch (e) { return d; }
+  let repo; try { repo = rh.treeAt(d); } catch (e) { return d; }
   const root = (repo && repo.wt) || d;
   while (d.length > root.length && statKind(d) !== "dir") d = dirname(d);
   return d;
@@ -421,7 +420,10 @@ function wtpath(wt, rel) {
   return abs;
 }
 
-module.exports = { treeAt: treeAt, wtdir: wtdir, resolve: resolve, wtpath: wtpath,
+//  CODE-028: FILL the exports object, never REPLACE it — resolve_hash.js requires
+//  this module at top level, and a fresh literal here would freeze its handle.
+Object.assign(module.exports, {
+                   treeAt: treeAt, wtdir: wtdir, resolve: resolve, wtpath: wtpath,
                    beRoot: beRoot,
                    argRel: argRel, ctxSub: _ctxSub, ctxDir: ctxDir,
                    navCwd: navCwd, navTree: navTree, cwd: contextCwd,
@@ -433,4 +435,4 @@ module.exports = { treeAt: treeAt, wtdir: wtdir, resolve: resolve, wtpath: wtpat
                    //  exported for wtlog.js / tests
                    repoFromBe: repoFromBe,
                    projectFromQuery: projectFromQuery,
-                   projectFromPath: projectFromPath };
+                   projectFromPath: projectFromPath });

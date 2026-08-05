@@ -68,6 +68,7 @@ const sha        = require("../../shared/util/sha.js");
 //  `<date7> <quad4> <path>` quad rows (legacy per-file banner retired).
 const quad       = require("../../shared/quad.js");
 const quadrender = require("../../view/quadrender.js");
+const brolib     = require("../../view/bro.js");
 const join = pathlib.join;   // BE-011: wtJoin confines wt-opens
 
 //  BE-010: read a wt regular file's on-disk bytes via the ONE reg-file read
@@ -495,7 +496,7 @@ function patchRun(ctx) {
   if (rc.conflicts.length) {
     const s = ctx && ctx.sink;
     if (s && !s.empty) {
-      const bytes = require("../../view/bro.js").renderHunkLog(s.log, ambient.format());
+      const bytes = brolib.renderHunkLog(s.log, ambient.format());
       if (bytes.length) { const b = io.buf(bytes.length + 8); b.feed(bytes); io.writeAll(1, b); }
     }
     throw "be patch: PATCHCONFLICT " + rc.conflicts.length +

@@ -17,6 +17,7 @@ const hunkrows = require("../../shared/hunkrows.js");
 //  BE-040: reuse the landed BE-038 board helpers — the key SHAPE test and the
 //  KEY→page probe (thin TOPIC/KEY.<ext>, fat TOPIC/KEY/README.<ext>).
 const todoView = require("../../views/todo/todo.js");
+const workView = require("../../views/work/work.js");
 
 const EXTS = ["mkd", "md", "txt"];
 
@@ -214,7 +215,7 @@ function wtForKey(key) {
   const workR = (typeof be !== "undefined" && be.workRoot) ? be.workRoot() : null;
   if (!workR) return null;
   let names;
-  try { names = require("../../views/work/work.js").listWork(workR); }
+  try { names = workView.listWork(workR); }
   catch (e) { return null; }
   for (const nm of names)
     if (todoView.ticketKey(nm) === key) return { dir: join(workR, nm), root: workR };

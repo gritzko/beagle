@@ -30,6 +30,13 @@
 const bro = require("view/bro.js");
 const pager = require("views/bro/pager.js");   // JAB-028: the raw-mode TUI
 const argline = require("shared/argline.js");  // JAB-004: the shared tokenizer
+//  CODE-028: core/loop.js requires this module back, so the handle is published
+//  BEFORE that require; loop.js FILLS its exports, so this one is safe too.
+module.exports = bro_;
+//  Require core/loop.js DIRECTLY, never the be/loop.js ENTRY shim: the shim's
+//  self-run guard (`argv[1] ends /loop.js -> cli(process.argv)`) re-fires on a
+//  fresh require, re-dispatching the OUTER `bro ...` argv (JAB-028).
+const loop = require("core/loop.js");
 
 function writeStdout(bytes) {
   const b = io.buf(bytes.length + 8);
@@ -101,11 +108,6 @@ function driveSpell(spell, context) {
       if (h.length) return h;
     }
   }
-  //  Require core/loop.js DIRECTLY, never the be/loop.js ENTRY shim: the shim's
-  //  self-run guard (`argv[1] ends /loop.js → cli(process.argv)`) re-fires on a
-  //  fresh require, re-dispatching the OUTER `bro …` argv — infinite recursion
-  //  (JAB-028).  core/loop.js as a module only exports; no self-run.
-  const loop = require("core/loop.js");
   const orig = io.writeAll;
   const chunks = [];
   io.writeAll = function (fd, b) {
@@ -173,7 +175,6 @@ function broRun(args, flags, ctx) {
     if (fd === null) fd = 1;
     try {
       //  isVerb lets the composer tell a real verb from a bareword path token.
-      const loop = require("core/loop.js");
       const p = new pager.Pager(fd, { color: true, driveSpell: driveSpell,
                                       isVerb: loop.isVerb,
                                       isMutation: loop.isMutation,
@@ -238,7 +239,6 @@ function broRun(args, flags, ctx) {
 
 //  JAB-004: opt into the plain-args convention (registry routes fn(...args)).
 bro_.jab = "args";
-module.exports = bro_;
 //  JAB-030: expose driveSpell on the exported fn (a fn IS an object) so the
 //  universal-pager edge (core/loop.js _openPager) + the pager wire the SAME
 //  address-bar spell drive — ONE spell path, no duplication.

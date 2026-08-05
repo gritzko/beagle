@@ -37,6 +37,8 @@
 const dag      = require("./dag.js");
 const classify = require("./classify.js");
 const shalib   = require("./util/sha.js");
+const discover = require("../core/discover.js");
+const rh       = require("../core/resolve_hash.js");
 const isFullSha = shalib.isFullSha;
 
 const CH = { same: ".", removed: "x", created: "o", advanced: "v" };
@@ -307,10 +309,8 @@ function tips(be, log, opts) {
   else if (att.track && opts.resolveTrack) track = opts.resolveTrack(att.track) || "";
   else if (att.track) {
     try {
-      const discover = require("../core/discover.js");
-      const rh = require("../core/resolve_hash.js")
-        .resolve_hash(discover.navCwd(be.wt), att.track);
-      const tip = rh.otype === "commit" ? rh.ohash : rh.chash;
+      const r = rh.resolve_hash(discover.navCwd(be.wt), att.track);
+      const tip = r.otype === "commit" ? r.ohash : r.chash;
       if (isFullSha(tip)) track = tip;
     } catch (e) { track = ""; }          // unresolvable track ⇒ all-'.' column
   }

@@ -32,6 +32,7 @@ const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be brid
 const match    = require("./match.js");
 const ext2lang = require("./ext.js");
 const navlib   = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
+const resolvelib = require("../../core/resolve.js");
 const EMPTY32  = new Uint32Array(0);   // JAB-029: hunks feed ctx.sink; cli renders
 
 //  --- URI parse: scheme->mode, #body (strip '…'), .ext, ./path, ?ref -------
@@ -194,7 +195,7 @@ function walkRef(repo, k, refQuery, want, visit) {
   //  leaves and pull each blob.  Mirrors CAPOScanRef → KEEPLsFiles tree walk
   //  + KEEPGetExact blob pull.
   let sha = k.resolveRef(refQuery);
-  if (!sha) { const r = require("../../core/resolve.js"); try { sha = r.resolveHex(k, refQuery); } catch (e) {} }
+  if (!sha) { try { sha = resolvelib.resolveHex(k, refQuery); } catch (e) {} }
   if (!sha) return;
   const treeSha = k.commitTree(sha) || sha;   // accept a tree sha directly
   k.readTreeRecursive(treeSha, function (leaf) {

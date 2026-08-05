@@ -40,6 +40,7 @@ const CI = require("shared/ci.js");
 //  CI-004 (TODO 8): the GENERIC per-view marks a view leaves for the pager —
 //  `tick` (re-run me every ~ms) and `end` (show me at my last page).
 const VIEWMARK = require("shared/viewmark.js");
+const stats = require("shared/util/stats.js");
 
 //  BRO-007: the ONE source of truth for the scroll-mode key bindings — the
 //  `help:` view (views/help/help.js) imports this so its SHORTCUTS section can
@@ -1497,7 +1498,7 @@ Pager.prototype.run = function () {
     //  BRO-043: under the CFOLD-001 `JAB_STATS` hook the session reports its
     //  cache behaviour on fd 2 (never fd 1) — what the pty repro asserts.
     try {
-      if (require("shared/util/stats.js").ON) {
+      if (stats.ON) {
         const s = CACHE.stats();
         const u = utf8.Encode("cache: hits=" + s.hits + " misses=" + s.misses +
                               " drops=" + s.drops + " dirs=" + s.dirs + "\n");

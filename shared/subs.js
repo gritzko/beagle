@@ -39,6 +39,9 @@ const join = require("./util/path.js").join;   // JSQUE-016: util libs -> shared
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
 const wtpath = require("../core/discover.js").wtpath;
 const isFullSha = require("./util/sha.js").isFullSha;
+const wtlog = require("./wtlog.js");
+const store = require("./store.js");
+const dag   = require("./dag.js");
 
 function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
 function isFile(p) { return statKind(p) === "reg"; }
@@ -54,19 +57,11 @@ function isMountAt(subWt) {
   return isFile(p) || (statKind(p) === "dir" && isFile(wtpath(subWt, ".be/wtlog")));
 }
 
-function libDir() {
-  return (typeof __dirname !== "undefined" && __dirname) ? __dirname : ".";
-}
-
 //  Classify one mounted sub against its pin (R1) using REAL ancestry on
 //  the sub's OWN shard.  Returns { bucket, stale, r4, title, ts }.  Mirrors
 //  SUBSDirty: open the sibling sub shard (be.treeAt on the sub wt resolves
 //  store+title), read R4 (sub-wt cur tip), then compare by ancestry.
 function classifyMount(parentRepo, subPath, pin) {
-  const wtlog = require(libDir() + "/wtlog.js");
-  const store = require(libDir() + "/store.js");
-  const dag   = require(libDir() + "/dag.js");
-
   const res = { bucket: "ok", stale: "", r4: "", title: "", ts: 0n };
   const subWt = join(parentRepo.wt, subPath);
 

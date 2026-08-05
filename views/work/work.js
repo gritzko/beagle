@@ -40,6 +40,9 @@ const dag        = require("../../shared/dag.js");         // ancestors/commitTs
 const graf       = require("../../shared/graf.js");        // GRAF-001: ahbeh cache
 const render     = require("../../view/render.js");        // dateCol (the 7-col form)
 const navlib     = require("../../shared/nav.js");         // URI-011: nav spells
+//  CODE-028: todo.js requires this module back, so the handle is published
+//  BEFORE that require; todo.js publishes ITS handle the same way.
+module.exports = work;
 const todo       = require("../todo/todo.js");             // BE-038/043: ticket titles
 const SPELL      = require("../../shared/spell.js");       // BRO-025: O-spell codec
 
@@ -856,7 +859,6 @@ function work() {
   for (let i = 0; i < argv.length; i++) workOne(argv[i], board, mode, sink);
 }
 work.jab = "args";
-module.exports = work;
 //  WORK-001: expose the internals for the repro test (the todo.js model).
 module.exports.workDir = workDir;
 module.exports.listWork = listWork;

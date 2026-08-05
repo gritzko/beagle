@@ -35,6 +35,8 @@ const quadrender = require("../../view/quadrender.js"); // BRO-030: quad row ren
 const cache    = require("../../shared/cache.js");      // STATUS-019: the rev tree
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
 const discover = require("../../core/discover.js");
+const submount = require("../../shared/submount.js");
+const gitmodules = require("../../shared/gitmodules.js");
 const wtpath = discover.wtpath;
 //  JAB-004: render.js's dateCol/verbCol/writeStdout/shQuote are no longer
 //  used here — the emit sink (core/emit.js) owns all column formatting at the
@@ -498,7 +500,6 @@ function gitlinkPins(k, commitSha) {
 //  STATUS-014: the parent-mount PIN label `//WT/sub#<basePin8>` (submount pin
 //  form) — the recursed sub's summary spells this, not its self-ref track row.
 function mountLabel(parentWt, subPath, basePin) {
-  const submount = require("../../shared/submount.js");
   const u = String(submount.trackUri(parentWt, subPath, basePin));
   return u.replace(/#[0-9a-f]+$/i, "") + "#" + basePin.slice(0, 8);
 }
@@ -508,7 +509,7 @@ function mountLabel(parentWt, subPath, basePin) {
 //  SUBSu8sParse over the `.gitmodules` blob top-to-bottom).  A minimal git-
 //  PUT-004: delegates to the shared reader (was a copy-pasted git-config parser).
 function gitmodulesOrder(wtRoot) {
-  return require("../../shared/gitmodules.js").paths(wtRoot);
+  return gitmodules.paths(wtRoot);
 }
 
 //  URI-aware join of a path column under a sub prefix (JAB-004) — replaces

@@ -59,6 +59,10 @@ const ulog = require("./ulog.js");           // DIS-057: ronStepMs (ms-correct b
 //  CFOLD-001: ONE core (expected.js, over the condensed pathdag) — status and
 //  diff read the SAME bytes through the SAME per-run cache.
 const expected = require("./expected.js");
+//  CODE-028: cache.js requires this module back; both FILL their exports.
+const cachelib = require("./cache.js");
+const gitmodules = require("./gitmodules.js");
+const ignorelib = require("./util/ignore.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 
@@ -78,7 +82,7 @@ const isFullSha = shalib.isFullSha;
 function wtWalk(wtRoot, ignore) {
   //  TODO-006: the rev tree arms a wt by walking it, right before the caller
   //  computes — take THAT walk instead of doing the same one twice.
-  const pre = require(libDir() + "/cache.js").takeWalk(wtRoot);
+  const pre = cachelib.takeWalk(wtRoot);
   if (pre) return pre;
   //  ONE PRUNING descent: io.readdir's cb `"skip"` directive cuts a subtree at
   //  its dir and keeps scanning the siblings, so an ignored dir and a nested
@@ -294,8 +298,8 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   const wtRoot = be.wt;
   //  SUBS-045: a real submodule is DECLARED in `.gitmodules`; an undeclared
   //  base-gitlink (the `be -> .` self-locator) must NOT be sub-classified.
-  const declaredSubs = new Set(require(libDir() + "/gitmodules.js").paths(wtRoot));
-  const ignore = require(libDir() + "/util/ignore.js").load(wtRoot);  // JSQUE-016
+  const declaredSubs = new Set(gitmodules.paths(wtRoot));
+  const ignore = ignorelib.load(wtRoot);                    // JSQUE-016
   const dropMeta = !!opts.skipMeta;
   const underNarrow = opts.underNarrow || null;
 
@@ -639,7 +643,7 @@ function isMeta(rel) {
 //    mount names.
 function classifyDir(be, wtlogReader, keeperReader, scopePfx) {
   const wtRoot = be.wt;
-  const ignore = require(libDir() + "/util/ignore.js").load(wtRoot);
+  const ignore = ignorelib.load(wtRoot);
   //  BE-028: defensive floor — resolveInTree THROWS NAVESCAPE on any `..` climb
   //  above the wt root, so a lexical scopePfx can never readdir outside the wt.
   const scopeRel = pathlib.resolveInTree("", scopePfx || "");
@@ -759,14 +763,10 @@ function classifyDir(be, wtlogReader, keeperReader, scopePfx) {
   return { files: files, dirs: Object.keys(dirSet) };
 }
 
-//  Resolve this module's own dir so it can require ignore.js by absolute
-//  path regardless of the top-level script's cwd-bound `require`.  The
-//  JABC require loader injects __dirname (require.cpp).
-function libDir() {
-  return (typeof __dirname !== "undefined" && __dirname) ? __dirname : ".";
-}
-
-module.exports = { classify: classify, classifyDir: classifyDir,
+//  CODE-028: FILL the exports object, never REPLACE it — cache.js requires this
+//  module at top level and would freeze an empty handle.
+Object.assign(module.exports, {
+                   classify: classify, classifyDir: classifyDir,
                    classifyMerge: classifyMerge, isMeta: isMeta,
                    wtScan: wtScan, wtWalk: wtWalk, wtEqBase: wtEqBase,
-                   patchStamps: patchStamps };
+                   patchStamps: patchStamps });

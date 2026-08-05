@@ -21,6 +21,7 @@ const emit = require("core/emit.js");
 //  JAB-004: the discover module stays intact + required; its API is folded onto
 //  the unified global `be` at loop entry (mintBe), and loop.js reads that global.
 const discover = require(_here + "/core/discover.js");
+const help = require(_here + "/views/help/help.js");
 //  DIS-060: the shape-(2) `<scheme>:uri` gate consults THIS projector+transport
 //  allowlist, NOT _isVerb — a VERB is not a SCHEME ([Nav]); mutation verbs absent.
 const SCHEME_ALLOW = (function () {
@@ -28,7 +29,7 @@ const SCHEME_ALLOW = (function () {
   //  table omits but which ARE dispatchable schemes.
   const s = new Set(["ssh", "https", "http", "git", "be", "file", "keeper",
                      "bro", "help"]);
-  const SCHEMES = require(_here + "/views/help/help.js").SCHEMES || [];
+  const SCHEMES = help.SCHEMES || [];
   for (const p of SCHEMES) {
     const k = String(p[0]);
     const c = k.indexOf(":");
@@ -45,6 +46,12 @@ const pager = require(_here + "/views/bro/pager.js");
 //  TODO-006: the [STATUS-019] rev tree — started BEFORE a pager-bound view
 //  renders, so the cold render's memos have a witness (see cli() below).
 const CACHE = require(_here + "/shared/cache.js");
+//  CODE-028: hoisted; the `_here` specs stay VERBATIM — _here is the ENTRY
+//  shim's shard root, a relative spec would re-anchor on this file's shard.
+const serve = require(_here + "/shared/serve.js");
+const storelib = require(_here + "/shared/store.js");
+const stats = require(_here + "/shared/util/stats.js");
+const broh = require(_here + "/views/bro/bro.js");
 
 //  run(opts): seed -> build registry -> consume-while-append dispatch loop.
 //    opts.seedRows : [{verb, uri}]   the seed job list (argv lowered; JSQUE-004
@@ -313,19 +320,19 @@ function cli(argv, opts2) {
   //  local-exec spawns) — intercept BEFORE the verb/banner/pager machinery and
   //  emit ONLY wire bytes on fd 1 (the hyphen also fails the verb gate anyway).
   if (argv[2] === "upload-pack") {
-    require(_here + "/shared/serve.js").uploadPack(argv[3] || "", 0, 1);
+    serve.uploadPack(argv[3] || "", 0, 1);
     return;
   }
   //  POST-028: `jab receive-pack <path>` — the PUSH serve twin (spawned by a
   //  local file:/be: post); same pre-verb raw-wire intercept as upload-pack.
   if (argv[2] === "receive-pack") {
-    require(_here + "/shared/serve.js").receivePack(argv[3] || "", 0, 1);
+    serve.receivePack(argv[3] || "", 0, 1);
     return;
   }
   //  DOG-027: an index is open for the duration of ONE dispatch — sweep the
   //  previous dispatch's readers on entry and this one's when it ends.
   const _closeIdx = function () {
-    try { require(_here + "/shared/store.js").closeAll(); } catch (e) {}
+    try { storelib.closeAll(); } catch (e) {}
   };
   _closeIdx();
   //  JAB-004: a driveSpell re-entry overlays its ambient onto the shared `be`;
@@ -547,8 +554,8 @@ function _cli(argv, opts2) {
   }
   //  CFOLD-001: `JAB_STATS=1` prints the object-read/fold counters on fd 2
   //  (never fd 1 — stdout byte-parity is untouched); OFF by default.
-  const _st = require(_here + "/shared/util/stats.js");
-  if (_st.ON) { try { const u = utf8.Encode(_st.line());
+
+  if (stats.ON) { try { const u = utf8.Encode(stats.line());
     const b = io.buf(u.length + 8); b.feed(u); io.write(2, b); } catch (e) {} }
   return res;
 }
@@ -587,7 +594,6 @@ function _openPager(hunks, context, call) {
   if (fd === null && io.isatty(0)) fd = 0;
   if (fd === null) fd = 1;
   try {
-    const broh = require(_here + "/views/bro/bro.js");
     const p = new pager.Pager(fd, { color: true, driveSpell: broh.driveSpell,
                                     context: context,
                                     isVerb: function (w) { return _isVerb(w, _here); },
@@ -605,8 +611,10 @@ function _openPager(hunks, context, call) {
 if (typeof module !== "undefined")
   //  isVerb: the pager's composer peels a leading token as a verb ONLY if it is a
   //  real handler (else it's a wt-relative path) — the SAME probe cli() dispatches on.
-  module.exports = { run: run, cli: cli,
+  //  CODE-028: FILL the exports object, never REPLACE it — views/bro/bro.js
+  //  requires this module at top level and would freeze an empty handle.
+  Object.assign(module.exports, { run: run, cli: cli,
                      isVerb: function (w) { return _isVerb(w, _here); },
                      isMutation: _isMutation,
-                     isTty: _isTty };          // BE-047: editor verbs (fn.tty)
+                     isTty: _isTty });         // BE-047: editor verbs (fn.tty)
 else cli(process.argv);

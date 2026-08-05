@@ -43,6 +43,7 @@ const join = pathlib.join;
 const sha = require("./util/sha.js");        // hashlet60FromBytes — never hand-rolled
 const store = require("./store.js");         // shardDir — never compose a shard by hand
 const ticketlib = require("./ticket.js");    // the SHARED ticket-code tokenizer
+const rh = require("../core/resolve_hash.js");
 
 //  The lane's runs live beside `keeper.idx` in the store shard.
 const IDX_EXT = ".meta.idx";
@@ -530,7 +531,7 @@ function roots(opts) {
   }
   let wt = o.wt, shard = o.shard;
   if (!wt || !shard) {
-    const t = require("../core/resolve_hash.js").treeAt(todo);
+    const t = rh.treeAt(todo);
     if (!wt) wt = t.wt;
     if (!shard) shard = store.shardDir(t.storePath, t.project);
   }

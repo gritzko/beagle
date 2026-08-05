@@ -60,6 +60,7 @@ const ulog = require("./ulog.js");
 //  GET-058: the ONE decision table (rows = track vs root, cols = wt vs base);
 //  the sub checkout and get.js's flat D5 leaf index the SAME 13 cells.
 const quad = require("./quad.js");
+const wtlog = require("./wtlog.js");
 const CH = quad.CH;
 
 function bytesEq(a, b) {
@@ -199,7 +200,7 @@ function apply(keeper, tipSha, wtRoot, opts) {
   function conSet(rel) {
     if (!bePath) return false;
     if (!_cons) {
-      try { _cons = require("./wtlog.js").open({ bePath: bePath }).conPaths(); }
+      try { _cons = wtlog.open({ bePath: bePath }).conPaths(); }
       catch (e) { _cons = new Set(); }
     }
     return _cons.has(rel);

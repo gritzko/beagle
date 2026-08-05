@@ -108,7 +108,10 @@ function fetchSource(info, arg) {
   return { tip: tip, branch: rem.branch || "" };
 }
 
-module.exports = { isFetchable: isFetchable, isSchemed: isSchemed,
+//  CODE-028: FILL the exports object, never REPLACE it — get.js requires this
+//  module at top level, and a fresh literal here would freeze its handle.
+Object.assign(module.exports, {
+                   isFetchable: isFetchable, isSchemed: isSchemed,
                    isWtPath: isWtPath, fetchSource: fetchSource,
                    fetchWtTip: fetchWtTip,
-                   landTip: landTip };   // GET-047: get's cross-source fetch leg
+                   landTip: landTip });  // GET-047: get's cross-source fetch leg

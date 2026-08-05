@@ -23,6 +23,7 @@
 "use strict";
 
 const pathlib = require("./path.js");
+const gitmodules = require("../gitmodules.js");
 const join = pathlib.join, dirname = pathlib.dirname, basename = pathlib.basename;
 
 //  Normalize: collapse `//`, strip a trailing `/` (keep root `/`).
@@ -169,7 +170,7 @@ function declaredSubOf(dir, home) {
     if (isRepo(up)) {
       const text = readFileText(join(up, ".gitmodules"));
       if (text == null) return false;
-      const subs = require("../gitmodules.js").parseText(text);
+      const subs = gitmodules.parseText(text);
       for (const s of subs) if (s.path === rel) return true;
       return false;
     }

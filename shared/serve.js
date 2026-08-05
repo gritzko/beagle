@@ -14,6 +14,7 @@ const store = require("./store.js");        // POST-028: receive-pack ref CAS
 const ingest = require("./ingest.js");      // POST-028: land the pushed pack
 const dag = require("./dag.js");            // POST-028: server-side FF gate
 const pathlib = require("./util/path.js");
+const discover = require("../core/discover.js");
 const join = pathlib.join;
 
 const ZERO_SHA = "0000000000000000000000000000000000000000";
@@ -99,7 +100,7 @@ function serveStore(selector) {
   let kind; try { kind = io.stat(beFile).kind; } catch (e) { kind = undefined; }
   if (kind === "reg") {
     const wt = (beFile === path) ? pathlib.dirname(path) : path;
-    const t = require("../core/discover.js").treeAt(wt);
+    const t = discover.treeAt(wt);
     return openServe(t.storePath, proj || t.project || "");
   }
   return openServe(path, proj);
