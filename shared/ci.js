@@ -286,6 +286,8 @@ function badge(r) {
 
 //  CI-004: the CURRENT CONTEXT's worktree root — the nav URI maps to a dir
 //  through discover.wtdir (confined), then treeAt anchors the tree it is in.
+//  BRO-046: it is TWO `.be` climbs, so it is resolved AT NAVIGATION only — the
+//  pager publishes its own (`pager.ctxWt`); one-shot callers still land here.
 function contextWt(navStr, fallback) {
   const fb = (fallback && fallback.wt) || null;
   let d = null;

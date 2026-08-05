@@ -219,6 +219,9 @@ function Pager(fd, opts) {
   //  Set ONLY by navigation (a follow/click, a slot-edit :spell, back); ""
   //  until the first nav (the launch context / navCwd supplies the fallback).
   this.ctx = "";
+  //  BRO-046: the PUBLISHED context worktree — `this.ctx` RESOLVED, republished
+  //  by _pubCtxWt at every nav.  The ci badge READS it; it never resolves.
+  this.ctxWt = null;
   this.view = null;                              // { hunks, rows, scroll, cols }
   this.stack = [];                               // JAB-030: the view BACK-stack
   this.mode = "scroll";                          // "scroll" | "command"
@@ -264,6 +267,7 @@ Pager.prototype.popView = function () {
   const rc = this.view.call && this.view.call.context;
   this.ctx = rc ? this._ctxFrom(rc)
            : this.view.uri !== undefined ? this._ctxFrom(this.view.uri) : "";
+  this._pubCtxWt();                              // BRO-046: back moved the context
   this._updatePrevUri();                         // DIS-061: back IS a view change
   return true;                                   // DIS-060: back caller refreshes
 };
@@ -568,19 +572,26 @@ Pager.prototype._drive = function (spell, ctx, quiet) {
   finally { this.loading = false; this.loadSpell = ""; }
 };
 
+//  BRO-046: PUBLISH the context worktree.  The pager OWNS the context, so it is
+//  the one that resolves it — here, at each nav point ([BRO-024]), never per frame.
+Pager.prototype._pubCtxWt = function () {
+  try { this.ctxWt = CI.contextWt(this._context(), this.be && this.be.repo); }
+  catch (e) { this.ctxWt = null; }
+  return this.ctxWt;
+};
+
 //  CI-004: `v` — start the detected build+test in the CONTEXT worktree (the
 //  pager is arg-blind; the runner takes no per-press configuration).
-Pager.prototype._ciRun = function (ctx) {
-  let wt = null;
-  try { wt = CI.contextWt(ctx || this._context(), this.be && this.be.repo); }
-  catch (e) { wt = null; }
-  return (this.message = CI.run(wt).message);
+Pager.prototype._ciRun = function () {
+  return (this.message = CI.run(this.ctxWt).message);
 };
 
 //  CI-004: read the context worktree's CI verdict row and render its badge.  A
 //  bad context must never take the status bar down, so every throw is a "".
+//  BRO-046: it READS the published wt — resolving here cost 2 mmaps per key-spin
+//  pass, ~19 leaked VMAs/s, and killed an idle session in under an hour.
 Pager.prototype._ciBadge = function () {
-  try { return CI.badge(CI.row(CI.contextWt(this._context(), this.be && this.be.repo))); }
+  try { return CI.badge(CI.row(this.ctxWt)); }
   catch (e) { return ""; }
 };
 
@@ -852,6 +863,7 @@ Pager.prototype._runSpell = function (spell, ctxOverride) {
       //  BRO-024: a follow/click IS navigation — REDUCE the target to the context.
       this.ctx = this._ctxFrom(this.view.uri);
     }
+    this._pubCtxWt();                            // BRO-046: both branches settled ctx
     this._updatePrevUri();                       // DIS-061: mirror the followed view
   } catch (e) { this.message = "err: " + String(e); }
 };
@@ -1154,6 +1166,7 @@ Pager.prototype._driveApply = function (spell, verb, uri, context, nav, disp) {
     //  BRO-024: a slot-edit IS navigation — REDUCE the merged address to the
     //  `//WT/dir` context (a verb word-call never moves the context).
     if (nav) this.ctx = this._ctxFrom(uri);
+    this._pubCtxWt();                            // BRO-046: the drive settled ctx
     this._updatePrevUri();                       // DIS-061: mirror the new view
   } catch (e) { this.message = "err: " + String(e); }
 };
@@ -1509,6 +1522,8 @@ Pager.prototype.run = function () {
   //  leaves it null and every view recomputes — the safety property.  It never
   //  registers with `pol`, so a `get` spell's pol.init() cannot strand it.
   try { CACHE.start(io.cwd()); } catch (e) {}
+  //  BRO-046: the LAUNCH context, published once — every later move republishes.
+  this._pubCtxWt();
   try {
     const rb = io.buf(64);
     let pend = null;                             // a straddling mouse-seq tail
