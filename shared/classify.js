@@ -59,7 +59,8 @@ const ulog = require("./ulog.js");           // DIS-057: ronStepMs (ms-correct b
 //  CFOLD-001: ONE core (expected.js, over the condensed pathdag) — status and
 //  diff read the SAME bytes through the SAME per-run cache.
 const expected = require("./expected.js");
-//  CODE-028: cache.js requires this module back; both FILL their exports.
+//  CODE-030: THE wt walk lives in cache.js (re-exported below); cache.js no
+//  longer requires this module back, so the pair is a plain one-way edge.
 const cachelib = require("./cache.js");
 const gitmodules = require("./gitmodules.js");
 const ignorelib = require("./util/ignore.js");
@@ -73,56 +74,9 @@ const isFullSha = shalib.isFullSha;
 //  (a subdir holding its own `.git`/`.be` file — a separate repo).
 //  mtime comes straight off io.lstat (JS-042 surfaced it as a ron60
 //  BigInt) — no `/usr/bin/stat` subprocess anymore (JS-044).
-//  BRO-043: THE wt walk, extracted verbatim out of wtScan — one recursive
-//  readdir that PRUNES at every ignored dir and nested-repo boundary, plus the
-//  boundary list itself.  wtScan (which wants the FILE half) and
-//  shared/cache.js (which wants the DIR half, to arm a watch on each) are its
-//  two callers; no second implementation of either leg.
-//  → { names, nestedPrefixes, underNested }
-function wtWalk(wtRoot, ignore) {
-  //  TODO-006: the rev tree arms a wt by walking it, right before the caller
-  //  computes — take THAT walk instead of doing the same one twice.
-  const pre = cachelib.takeWalk(wtRoot);
-  if (pre) return pre;
-  //  ONE PRUNING descent: io.readdir's cb `"skip"` directive cuts a subtree at
-  //  its dir and keeps scanning the siblings, so an ignored dir and a nested
-  //  repo are never enumerated and never stat'd.  The dir ENTRY itself is
-  //  delivered before its directive is read, so it stays in `names` (cache.js
-  //  arms `.be/` off exactly that) — only the subtree goes.  A jab without the
-  //  directive reads `"skip"` as `"more"`: same answer, the old cost.
-  //  hidden:true — native scans dotfiles too (`.gitignore` is tracked);
-  //  only `.git`/`.be` are meta, filtered by the ignore matcher below.
-  //  Nested-repo dir prefixes are found in the SAME pass (a dir D with D/.git
-  //  or a D/.be FILE): the boundary is what stops the descent, so a sub's own
-  //  inner subs never enter the list — `underNested` answers for them off the
-  //  outermost prefix, which is all either caller ever asked of it.
-  const names = [], nestedPrefixes = [];
-  try {
-    io.readdir(wtRoot, { recursive: true, hidden: true, callback: function (nm) {
-      names.push(nm);
-      if (nm[nm.length - 1] !== "/") return "more";    // dirs decide descent
-      const dirRel = nm.slice(0, -1);
-      if (ignore.match(dirRel, true)) return "skip";
-      const full = wtpath(wtRoot, dirRel);
-      if (statKind(join(full, ".git")) !== undefined) {
-        nestedPrefixes.push(dirRel + "/"); return "skip";
-      }
-      const beKind = statKind(join(full, ".be"));
-      //  SUBS-049: a PRIMARY nested wt (`.be` DIR holding wtlog, a green-field
-      //  remote-get clone) is a repo boundary too — not only the `.be` FILE form.
-      if (beKind === "reg" || (beKind === "dir" &&
-          statKind(join(full, ".be/wtlog")) === "reg")) {
-        nestedPrefixes.push(dirRel + "/"); return "skip";
-      }
-      return "more";
-    } });
-  } catch (e) { names.length = 0; nestedPrefixes.length = 0; }
-  function underNested(rel) {
-    for (const p of nestedPrefixes) if (rel === p.slice(0, -1) || rel.indexOf(p) === 0) return true;
-    return false;
-  }
-  return { names: names, nestedPrefixes: nestedPrefixes, underNested: underNested };
-}
+//  CODE-030: the walk itself now lives in cache.js (next to the rev keying its
+//  memo); `wtWalk` here is the re-export, so call sites are unchanged.
+const wtWalk = cachelib.wtWalk;
 
 function wtScan(wtRoot, ignore) {
   const out = {};            // rel → { ts, kind: 'f'|'x'|'l' }
@@ -162,8 +116,6 @@ function wtScan(wtRoot, ignore) {
   }
   return out;
 }
-
-function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
 
 //  --- content-confirmed clean ------------------------------------------
 //  Hash the wt bytes at `rel` as a git blob and compare to baseSha.
@@ -763,10 +715,7 @@ function classifyDir(be, wtlogReader, keeperReader, scopePfx) {
   return { files: files, dirs: Object.keys(dirSet) };
 }
 
-//  CODE-028: FILL the exports object, never REPLACE it — cache.js requires this
-//  module at top level and would freeze an empty handle.
-Object.assign(module.exports, {
-                   classify: classify, classifyDir: classifyDir,
+module.exports = { classify: classify, classifyDir: classifyDir,
                    classifyMerge: classifyMerge, isMeta: isMeta,
                    wtScan: wtScan, wtWalk: wtWalk, wtEqBase: wtEqBase,
-                   patchStamps: patchStamps });
+                   patchStamps: patchStamps };

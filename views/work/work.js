@@ -40,10 +40,9 @@ const dag        = require("../../shared/dag.js");         // ancestors/commitTs
 const graf       = require("../../shared/graf.js");        // GRAF-001: ahbeh cache
 const render     = require("../../view/render.js");        // dateCol (the 7-col form)
 const navlib     = require("../../shared/nav.js");         // URI-011: nav spells
-//  CODE-028: todo.js requires this module back, so the handle is published
-//  BEFORE that require; todo.js publishes ITS handle the same way.
-module.exports = work;
-const todo       = require("../todo/todo.js");             // BE-038/043: ticket titles
+//  CODE-030: the ticket-page family is a shared LIBRARY, not the todo VIEW —
+//  reading it here is what unhooks the todo↔work cycle.
+const page       = require("../../shared/ticketpage.js");  // BE-038/043: ticket titles
 const SPELL      = require("../../shared/spell.js");       // BRO-025: O-spell codec
 
 //  tok32 (dog/tok/TOK.h): [31..27] tag (A+n)  [23..0] end byte offset.
@@ -444,11 +443,11 @@ function feed(sink, banner, parts, spans, off) {
 //  ONE lookup per render run — reset by emitForest, never cached across runs.
 let _board, _page = new Map(), _title = new Map(), _link = new Map();
 function memoReset() { _board = undefined; _page = new Map(); _title = new Map(); _link = new Map(); }
-function memoBoard() { if (_board === undefined) _board = todo.boardDir(); return _board; }
+function memoBoard() { if (_board === undefined) _board = page.boardDir(); return _board; }
 function memoPage(key) {
   if (_page.has(key)) return _page.get(key);
   const b = memoBoard();
-  const f = b ? todo.pageFile(b.dir, key) : null;
+  const f = b ? page.pageFile(b.dir, key) : null;
   _page.set(key, f);
   return f;
 }
@@ -456,12 +455,12 @@ function memoPage(key) {
 //  BE-043 (merge ruling): the one-line post message IS the ticket page's own
 //  title, via the todo board's pageFile/pageTitle; "" when no board/page.
 function ticketTitle(key) {
-  if (todo.shape(key) !== "key") return "";
+  if (page.shape(key) !== "key") return "";
   if (_title.has(key)) return _title.get(key);
   const file = memoPage(key);
   //  WORK-008: strip the [OPEN]/[HIGH]/… status mark so the minted post message
   //  is the bare `KEY: title` commit convention (the board keeps it via headerMark).
-  const t = file ? todo.stripMark(key, todo.pageTitle(file)) : "";
+  const t = file ? page.stripMark(key, page.pageTitle(file)) : "";
   _title.set(key, t);
   return t;
 }
@@ -478,9 +477,9 @@ function ticketLink(name) {
   if (_link.has(name)) return _link.get(name);          // TODO-001: once per name
   const board = memoBoard();
   let s = "";
-  const key = board ? todo.ticketKey(name) : "";
+  const key = board ? page.ticketKey(name) : "";
   if (key) s = memoPage(key) ? SPELL.mintOspell("//", "ticket " + key) : "";
-  else if (board && todo.shape(name) === "topic")
+  else if (board && page.shape(name) === "topic")
     s = isDir(join(board.dir, name)) ? SPELL.mintOspell("//", "todo " + name) : "";
   _link.set(name, s);
   return s;
@@ -859,6 +858,7 @@ function work() {
   for (let i = 0; i < argv.length; i++) workOne(argv[i], board, mode, sink);
 }
 work.jab = "args";
+module.exports = work;
 //  WORK-001: expose the internals for the repro test (the todo.js model).
 module.exports.workDir = workDir;
 module.exports.listWork = listWork;

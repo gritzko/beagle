@@ -25,13 +25,18 @@
 "use strict";
 
 const pathlib  = require("../shared/util/path.js");
-const discover = require("./discover.js");
 const store    = require("../shared/store.js");
 const ulog     = require("../shared/ulog.js");
 const wtlog    = require("../shared/wtlog.js");
 const isFullSha = require("../shared/util/sha.js").isFullSha;
+const join = pathlib.join, dirname = pathlib.dirname;
 
 const BE = ".be";
+const WTLOG = "wtlog";
+
+//  CODE-030: the `.be` CLIMB and the ANCHOR READER are two halves of ONE
+//  primitive, so the reader (beRoot/resolveAnchor) and the CONFINEMENT step 2-3
+//  rides (resolve) now live HERE, beside the climb; core/discover.js forwards.
 
 //  A hashlet is 6..40 hex ([/meta/abc] §Hashes): any prefix in that range may
 //  address an object; 40 is the full sha.
@@ -69,6 +74,176 @@ function anchors(dir) {
   return !!row0;
 }
 
+function beRoot() { return io.getenv("BE_ROOT") || io.getenv("HOME"); }
+
+function statKind(p) {
+  try { return io.stat(p).kind; } catch (e) { return undefined; }
+}
+function isFile(p) { return statKind(p) === "reg"; }
+
+//  DOGRepoFromBe: the store root is everything before the first `/.be/`
+//  separator in a row-0 anchor URI path; falls back to stripping a
+//  trailing `.be` (and trailing slashes) when no `/.be/` is present.
+function repoFromBe(path) {
+  let p = path;
+  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+  const i = p.indexOf("/" + BE + "/");
+  if (i >= 0) return p.slice(0, i);
+  if (p.endsWith("/" + BE)) p = p.slice(0, -(BE.length + 1));
+  else if (p.endsWith(BE)) p = p.slice(0, -BE.length);
+  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+  return p;
+}
+
+//  DOGQueryProject: absolute `/<title>` or `/<title>/<branch>` → title;
+//  a non-absolute or empty query → "".
+function projectFromQuery(query) {
+  if (!query || query[0] !== "/") return "";
+  const rest = query.slice(1);
+  const j = rest.indexOf("/");
+  return j < 0 ? rest : rest.slice(0, j);
+}
+
+//  DOGProjectFromBe: the first path segment after `/.be/`, unless it is
+//  itself `.be` (a doubled store dir) — then treat as elided.
+function projectFromPath(path) {
+  let p = path;
+  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+  const i = p.indexOf("/" + BE + "/");
+  if (i < 0) return "";
+  const seg = p.slice(i + BE.length + 2).split("/")[0] || "";
+  return seg === BE ? "" : seg;
+}
+
+//  Read row 0 of a wtlog and return { verb, uri }, or undefined.  A store
+//  anchor row 0 is a `get`/`repo` row pointing at the shared store.
+function row0Row(bePath) {
+  let row;
+  ulog.each(bePath, function (log) {
+    if (row === undefined) row = { verb: log.verb, uri: log.uri };
+  });
+  return row;
+}
+
+//  POST-027: wtlog.anchor()'s test — ONLY a get/repo row 0 anchors a store;
+//  a fresh wt's put row 0 stages a FILE, whose path is never a store.
+function isAnchorRow(r) { return !!r && (r.verb === "get" || r.verb === "repo"); }
+
+//  Resolve the anchor at `wt` (a dir holding `.be`) into store/project.
+//  Primary (`.be` is a dir): store == wt; project from the dir's row-0
+//  wtlog anchor when present, else single-shard scan is left to keeper.
+//  Secondary (`.be` is a file): store + project from row 0's redirect.
+function resolveAnchor(wt) {
+  const be = join(wt, BE);
+  const kind = statKind(be);
+  let bePath, storePath, project = "";
+
+  if (kind === "reg") {
+    //  Secondary worktree: the `.be` file is the wtlog.
+    bePath = be;
+    const r = row0Row(be);
+    if (isAnchorRow(r)) {
+      const p = new URI(r.uri);
+      storePath = repoFromBe(p.path);
+      project = projectFromQuery(p.query) || projectFromPath(p.path);
+    }
+    if (!storePath) storePath = wt;
+  } else {
+    //  Primary worktree: <wt>/.be/wtlog.
+    bePath = join(be, WTLOG);
+    storePath = wt;                          // colocated store == wt
+    const r = isFile(bePath) ? row0Row(bePath) : undefined;
+    if (r) {
+      const p = new URI(r.uri);
+      //  POST-027: only a get/repo row 0 is a store anchor; a fresh wt's put
+      //  row 0 (or a jab-posted primary's post row 0) stays store==wt.
+      if (isAnchorRow(r) && p.path) { const sp = repoFromBe(p.path); if (sp) storePath = sp; }
+      project = projectFromQuery(p.query) || projectFromPath(p.path || "");
+    }
+  }
+  return { root: storePath, wt: wt, bePath: bePath, storePath: storePath,
+           project: project };
+}
+
+//  BE-030: the tree NAME comes from `context` ALONE — its `.host` (a URI object,
+//  the nav scope a session STARTS with, navCwd(cwd) carrying BOTH the `//name`
+//  authority AND the in-repo path).  A `context.host` of ""/"." → the LAUNCH tree.
+function _ctxHost(context) {
+  if (context && typeof context === "object") return context.host || "";   // a URI
+  if (typeof context === "string") {                  // tolerate a raw string
+    try { return (uri._parse(context) || {}).host || ""; } catch (e) { return ""; }
+  }
+  return "";
+}
+
+//  BE-030: the context's PATH — the TRUSTED in-repo dir the untrusted `rel`
+//  resolves against (the old `base` arg, now folded INTO the context).  A path-less
+//  context (`//name`) → "" = the tree root.  Same URI-object-or-string tolerance
+//  as _ctxHost; an untrusted path must ride `rel`, never be planted here.
+function _ctxPath(context) {
+  if (context && typeof context === "object") return context.path || "";   // a URI
+  if (typeof context === "string") {
+    try { return (uri._parse(context) || {}).path || ""; } catch (e) { return ""; }
+  }
+  return "";
+}
+
+//  BE-030: `rel` is a PATH, not a URI — reject an authority (`//other`) or a
+//  scheme (`git://…`) via the URI binding (no hand-parsing).  A tree SWAP is the
+//  nav layer's job, NEVER the fs resolver's; this closes the `//OTHER` escape.
+//  URI-016/JS-075: the parse is a SCHEME/AUTHORITY GUARD ONLY — the PATH handed
+//  back is the arg VERBATIM.  `rel` names a file on disk, so a `#`/`?` in it is a
+//  literal byte of the NAME, not a fragment/query delimiter: taking `u.path` back
+//  truncated `a#b` -> `a` and silently checked out the wrong file.  Callers that
+//  do mean a URI (wtdir/frame) shed the query/fragment themselves and pass the
+//  bare `u.path` in, for which this is a no-op.
+function _relPath(rel) {
+  if (rel === undefined || rel === null || rel === "") return "";
+  const s = String(rel);
+  let u; try { u = uri._parse(s); } catch (e) { u = {}; }
+  if (u.scheme !== undefined)
+    throw "NAVESCAPE: rel path carries a scheme, not a path: " + s;
+  if (u.authority !== undefined)
+    throw "NAVESCAPE: rel path carries a // authority, not a path: " + s;
+  return s;
+}
+
+//  BE-030: resolve(context, rel) → the ABSOLUTE fs path, CONFINED to the CONTEXT's
+//  tree.  `context` (a URI object) carries BOTH the tree NAME (its authority) and
+//  the TRUSTED in-repo dir the relative arg resolves against (its PATH); `rel` is
+//  the UNTRUSTED relative arg.  Folds the old `base` INTO the context — the current
+//  dir was always the context's own path, so it is no longer passed twice; a caller
+//  whose context path is UNTRUSTED (wtdir) strips it into `rel`.  `rel` is
+//  AUTHORITY-BLIND (no `//other`, no `scheme:` — a tree swap can no longer ride the
+//  arg slot), and resolveInTree THROWS "NAVESCAPE" on any `..` that climbs above the
+//  tree root, so the result can NEVER leave the `<srcRoot>/name` cell.  A rooted `/x` rel
+//  addresses the tree root (drops the context path); ""/"." context host → the
+//  PROJECT ROOT ([/wiki/URI] step 2).  Throws on escape / bad name.
+function resolve(context, rel) {
+  const host = _ctxHost(context);
+  const relPath = _relPath(rel);                      // throws on a //other / scheme
+  //  A rooted `/x` addresses the tree root (context path dropped); else `rel`
+  //  resolves against the context's trusted in-repo path.  resolveInTree NORMALISES.
+  const basePath = relPath[0] === "/" ? "" : _ctxPath(context);
+  const sub = pathlib.resolveInTree(basePath, relPath);   // throws on climb-out
+  if (host === "" || host === ".") {
+    //  URI-016: `//` = the PROJECT ROOT — [/wiki/URI] step 2 says `///mtrel` IS
+    //  `$SRC_ROOT/mtrel`, so there is nothing to search for and no launch-tree
+    //  guess: no root means no repo, which is PROJNONE.
+    const wt = projectRoot();
+    if (!wt) throw "PROJNONE: no project root above " + io.cwd() + " — no repo";
+    return sub ? join(wt, sub) : wt;
+  }
+  if (!pathlib.safeRel(host)) throw "NAVESCAPE: bad nav authority //" + host;
+  //  URI-016: refuse LOUDLY when there is no project root — an unguarded join()
+  //  fabricated the silent garbage path "null/NAME/..." at the confinement
+  //  chokepoint, which is the last place that should invent a path.
+  const work = workRoot();                   // step 2: $SRC_ROOT/work/WT
+  if (!work) throw "PROJNONE: no project root above " + io.cwd() + " — no repo";
+  const dir = join(work, host);
+  return sub ? join(dir, sub) : dir;
+}
+
 //  URI-016: THE `.be` climb — the ONE walk up the chain, and there is no other.
 //  Both of the spec's anchor questions ask THIS chain, with the SAME anchors()
 //  test; they differ in ONE word: step 1 keeps the TOPMOST anchor (the project
@@ -77,7 +252,7 @@ function anchors(dir) {
 //  so the break PRECEDES the probe — $BE_ROOT/.be is the STORE, and a store is
 //  neither a project root nor a worktree.  Returns the anchor dir, or null.
 function climb(from, topmost) {
-  const home = discover.beRoot();
+  const home = beRoot();
   let dir = from, hit = null;
   for (;;) {
     if (home && dir === home) break;                  // "still lower than $BE_ROOT"
@@ -162,7 +337,7 @@ function treeAt(path, from, topDir) {
   const p = path || io.cwd();
   const wt = climb(from || p, false);
   if (!wt) throw "WTNONE: no .be worktree anchor from '" + p + "'";
-  const a = discover.resolveAnchor(wt);                // the anchor READER, not a climb
+  const a = resolveAnchor(wt);                         // the anchor READER, not a climb
   const top = topDir || topOf(wt) || wt;
   const work = workRoot();
   //  `wtree` is the worktree's NAME; the main tree has no `//name` address ("").
@@ -180,12 +355,12 @@ function treeAt(path, from, topDir) {
 function step1() {
   const root = projectRoot();
   if (!root) throw "PROJNONE: no .be below $BE_ROOT above " + io.cwd() + " — no repo";
-  return { mpath: slash(root), store: storeOf(discover.resolveAnchor(root)) };
+  return { mpath: slash(root), store: storeOf(resolveAnchor(root)) };
 }
 
 //  steps 2-4: fix the filesystem path, then read `wtree`/`spath`/`rpath`/`shard`
 //  off it.  Step 2 (`//WT/wtrel` -> $SRC_ROOT/work/WT/wtrel, `///mtrel` ->
-//  $SRC_ROOT/mtrel) and step 3's confinement both live in discover.resolve.
+//  $SRC_ROOT/mtrel) and step 3's confinement both live in resolve() above.
 function frame(cu, u) {
   //  3.1: the worktree comes from the context when the uri lacks one.  3.2: a
   //  relative path resolves against the context's path — an OWN `//WT` reroots.
@@ -199,10 +374,10 @@ function frame(cu, u) {
   //  STATUS-010: a PATH-LESS uri sits AT the context's own dir; a context is
   //  $PWD-like (BRO-024, always INSIDE), so a mount root reads ENTERED.
   const entered = raw === "" || (raw.length > 1 && raw[raw.length - 1] === "/");
-  //  discover.resolve reads .host/.path off a plain object and throws NAVESCAPE
+  //  resolve() reads .host/.path off a plain object and throws NAVESCAPE
   //  on any climb-out; `//`/`//.` name the main tree, `//WT` the worktree.
-  const abs = discover.resolve({ host: wtree, path: base }, raw);
-  const top = discover.resolve({ host: wtree, path: "" }, "");
+  const abs = resolve({ host: wtree, path: base }, raw);
+  const top = resolve({ host: wtree, path: "" }, "");
 
   //  step 4: treeAt climbs from the path to its INNERMOST anchor — that IS the
   //  submodule descent (a mounted sub is a wt) — and derives shard/spath/rpath
@@ -310,12 +485,14 @@ function resolve_hash(context_uri, uri) {
            otype: o.otype, ohash: o.ohash };
 }
 
-//  CODE-028: FILL the exports object, never REPLACE it — discover.js requires
-//  this module at top level, and a fresh literal here would freeze its handle.
-Object.assign(module.exports, {
-                   resolve_hash: resolve_hash,
+module.exports = { resolve_hash: resolve_hash,
                    projectRoot: projectRoot, workRoot: workRoot,
                    todoRoot: todoRoot, metaRoot: metaRoot,
                    //  URI-016: step 4 + the layout — THE `.be` climb lives here
                    //  and nowhere else; discover.treeAt delegates to treeAt.
-                   treeAt: treeAt, topOf: topOf });
+                   treeAt: treeAt, topOf: topOf,
+                   //  CODE-030: the climb's own halves, forwarded by discover.js.
+                   beRoot: beRoot, resolveAnchor: resolveAnchor, resolve: resolve,
+                   repoFromBe: repoFromBe,
+                   projectFromQuery: projectFromQuery,
+                   projectFromPath: projectFromPath };

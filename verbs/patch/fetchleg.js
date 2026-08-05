@@ -9,7 +9,9 @@
 const store  = require("../../shared/store.js");
 const wire   = require("../../shared/wire.js");
 const ingest = require("../../shared/ingest.js");
-const get    = require("../get/get.js");
+//  CODE-030: the remote classifier is get's LEAF (verbs/get/remote.js), not the
+//  verb — reading it here is what unhooks the fetchleg↔get cycle.
+const remote = require("../get/remote.js");
 const pathlib = require("../../shared/util/path.js");
 const isFullSha = require("../../shared/util/sha.js").isFullSha;
 const join = pathlib.join;
@@ -71,13 +73,13 @@ function fetchWtTip(info, src, tip, arg) {
 //  returns the now-local { tip, branch }.  Throws PATCHFETCH loudly BEFORE
 //  any wt mutation on an unreachable/unresolvable source.
 function fetchSource(info, arg) {
-  const rem = get.parseRemote(String(arg));
+  const rem = remote.parseRemote(String(arg));
   let tip;
   try {
     if (rem.local) {
       //  PATCH-011: a local store source resolves to its REAL store (GET-038
       //  redirect), then ships the closure our shard lacks (GIT-018).
-      const src = get.resolveLocalSource(rem);
+      const src = remote.resolveLocalSource(rem);
       const serve = URI.make(undefined, undefined, src.storeRoot,
                              src.proj ? "/" + src.proj : undefined);
       const k = wire.serveReader(serve);
@@ -108,10 +110,7 @@ function fetchSource(info, arg) {
   return { tip: tip, branch: rem.branch || "" };
 }
 
-//  CODE-028: FILL the exports object, never REPLACE it — get.js requires this
-//  module at top level, and a fresh literal here would freeze its handle.
-Object.assign(module.exports, {
-                   isFetchable: isFetchable, isSchemed: isSchemed,
+module.exports = { isFetchable: isFetchable, isSchemed: isSchemed,
                    isWtPath: isWtPath, fetchSource: fetchSource,
                    fetchWtTip: fetchWtTip,
-                   landTip: landTip });  // GET-047: get's cross-source fetch leg
+                   landTip: landTip };   // GET-047: get's cross-source fetch leg

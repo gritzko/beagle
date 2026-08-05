@@ -28,15 +28,13 @@
 //  the upward be/-scan resolves it against the be/ root via the self-loop, the
 //  same way core/emit.js requires view/render.js.
 const bro = require("view/bro.js");
-const pager = require("views/bro/pager.js");   // JAB-028: the raw-mode TUI
-const argline = require("shared/argline.js");  // JAB-004: the shared tokenizer
-//  CODE-028: core/loop.js requires this module back, so the handle is published
-//  BEFORE that require; loop.js FILLS its exports, so this one is safe too.
-module.exports = bro_;
 //  Require core/loop.js DIRECTLY, never the be/loop.js ENTRY shim: the shim's
 //  self-run guard (`argv[1] ends /loop.js -> cli(process.argv)`) re-fires on a
 //  fresh require, re-dispatching the OUTER `bro ...` argv (JAB-028).
+//  CODE-030: the spell drive + the pager edge live THERE now (loop dispatch),
+//  so this edge is one-way; the two handles below keep every call site.
 const loop = require("core/loop.js");
+const driveSpell = loop.driveSpell, spellCall = loop.spellCall;
 
 function writeStdout(bytes) {
   const b = io.buf(bytes.length + 8);
@@ -49,93 +47,6 @@ function writeStderr(str) {
   const b = io.buf(bytes.length + 8);
   b.feed(bytes);
   io.writeAll(2, b);
-}
-
-//  Build the hunk OBJECTS (the renderer's model) for the positional args — the
-//  same file/dir hunks plainHunk consumes, but kept whole for the TUI viewport.
-//  A missing/unopenable arg is skipped (the pager just shows what opened).
-function buildHunks(args) {
-  const hunks = [];
-  for (const arg of args) {
-    const u = uri._parse(arg);
-    const path = u.path || arg;
-    const fp = bro.fsPath(path);
-    let st;
-    try { st = io.stat(fp); } catch (e) { continue; }
-    let h = null;
-    try { h = st.kind === "dir" ? bro.buildDirHunk(arg, fp) : bro.buildFileHunk(arg, fp); }
-    catch (e) { continue; }
-    if (h !== null) hunks.push(h);
-  }
-  return hunks;
-}
-
-//  JAB-004: address-bar line → argv via the SHARED argline splitter (pager `:`
-//  splits like the CLI); verb null ⇒ URI/path, object/array arg ⇒ PARAMOBJ.
-function spellCall(spell) {
-  const r = argline.parse(spell);
-  if (r.verb == null) return null;                // a URI/path — not a call
-  if (r.args.length === 0) return [r.verb];       // bare verb
-  const argv = [r.verb];
-  for (const p of r.args) {
-    const t = typeof p;
-    if (p === null || t === "string" || t === "number" || t === "boolean")
-      argv.push(String(p));
-    else throw "PARAMOBJ";                         // object/array need the `be` global
-  }
-  return argv;
-}
-
-//  driveSpell(spell) -> hunks: the in-process address-bar drive (JAB-028 TODO#5).
-//  Re-enter the resident loop for the typed spell in --tlv mode, capturing its
-//  fd-1 'H'-record stream via a reversible io.writeAll hook (no dup2, no spawn,
-//  no /proc — pure JS), then reparse the tlv into hunks.  A bare `path#Lnn` (no
-//  scheme) lowers to bro's own file hunk; a `<verb>:<uri>` re-enters loop.cli.
-//  The outer loop owns argv[1]=loop.js, so the re-entrant cli's require-scan and
-//  queue path resolve correctly (sequential re-entry, JAB-004 recursion).
-//  BE-039: `context` (optional, `//name`) is the nav scope for a VERB word-call — it
-//  rides the reentry opts (loop.cli opts2.context), NOT an arg, so the verb resolves
-//  each RAW arg against it; a slot-edit / bare-path drive passes none (cwd repo).
-function driveSpell(spell, context) {
-  //  JAB-003: a `verb param` / `verb(a,b)` CALL splits to a proper argv; null →
-  //  a bare path / scheme:uri → the legacy single-token file/loop drive below.
-  const call = spellCall(spell);
-  if (!call) {
-    const u = uri._parse(spell);
-    //  No scheme + a plain path → bro's OWN file/dir hunk (no loop re-entry).
-    if (!u.scheme) {
-      const h = buildHunks([spell]);
-      if (h.length) return h;
-    }
-  }
-  const orig = io.writeAll;
-  const chunks = [];
-  io.writeAll = function (fd, b) {
-    if (fd === 1) { chunks.push(b.data().slice()); return; }
-    return orig(fd, b);
-  };
-  //  JSQUE-020: each cli() now builds its OWN in-memory queue, so the re-entrant
-  //  sub-run no longer needs a distinct queue path (the old file-queue shared-
-  //  unlink crash is gone); opts2.reentry only marks it so no nested pager opens.
-  const argv = call ? ["jab", "loop.js"].concat(call, ["--tlv"])
-                    : ["jab", "loop.js", spell, "--tlv"];
-  //  BE-039: thread the nav context as CONTEXT (opts2.context) so the verb scopes
-  //  its RAW args to that tree — the pager never bakes it into an arg's spelling.
-  try { loop.cli(argv, { reentry: true, context: context || undefined }); }
-  finally { io.writeAll = orig; }
-  let total = 0; for (const c of chunks) total += c.length;
-  const tlv = new Uint8Array(total);
-  let o = 0; for (const c of chunks) { tlv.set(c, o); o += c.length; }
-  //  A hunk-stream view (cat/grep/spot/regex via renderHunkLog) emits 'H'
-  //  records → rich hunks.  An emit-sink view (ls/lsr/status/refs, columnar)
-  //  emits plain TEXT — wrap that whole output as ONE plain hunk so the pager
-  //  still shows it (no toks → no syntax paint, but it browses).  [Until the
-  //  mmap-buf sink lands so EVERY view feeds hunks directly — see JAB-029.]
-  const hunks = pager.hunksFromTlv(tlv);
-  if (hunks.length) return hunks;
-  if (total > 0) return [{ uri: spell, verb: "hunk", text: tlv,
-                           toks: new Uint32Array(0), kind: "file" }];
-  return [];
 }
 
 //  JAB-004: PLAIN verb (`.jab="args"`) — bro OWNS its whole batch in ONE call
@@ -167,21 +78,9 @@ function broRun(args, flags, ctx) {
       try { const h = driveSpell(arg); if (h && h.length) hunks = hunks.concat(h); }
       catch (e) { /* a bad spell just contributes nothing */ }
     }
-    //  Keystrokes come from the controlling terminal (so input still works when
-    //  stdin is a data pipe — API.md's /dev/tty pattern); else tty stdin, then 1.
-    let fd = null, own = false;
-    try { fd = io.open("/dev/tty", "rw"); own = true; } catch (e) { fd = null; }
-    if (fd === null && io.isatty(0)) fd = 0;
-    if (fd === null) fd = 1;
-    try {
-      //  isVerb lets the composer tell a real verb from a bareword path token.
-      const p = new pager.Pager(fd, { color: true, driveSpell: driveSpell,
-                                      isVerb: loop.isVerb,
-                                      isMutation: loop.isMutation,
-                                      isTty: loop.isTty });   // BE-047: editors
-      p.setHunks(hunks);
-      p.run();
-    } finally { if (own) { try { io.close(fd); } catch (e) {} } }
+    //  CODE-030: THE universal-tty pager edge is loop.openPager — the same
+    //  /dev/tty open + Pager wiring this block spelled a second time.
+    loop.openPager(hunks);
     return;
   }
 
@@ -239,9 +138,11 @@ function broRun(args, flags, ctx) {
 
 //  JAB-004: opt into the plain-args convention (registry routes fn(...args)).
 bro_.jab = "args";
+module.exports = bro_;
 //  JAB-030: expose driveSpell on the exported fn (a fn IS an object) so the
 //  universal-pager edge (core/loop.js _openPager) + the pager wire the SAME
-//  address-bar spell drive — ONE spell path, no duplication.
+//  address-bar spell drive — ONE spell path, no duplication.  CODE-030: it is
+//  loop.js's now, re-exported here so bro's own callers are unchanged.
 module.exports.driveSpell = driveSpell;
 //  JAB-004: expose the shared-tokenizer spell splitter for the phase-1 driver
 //  (test/argline.js) to assert the pager `:` line splits like the CLI.

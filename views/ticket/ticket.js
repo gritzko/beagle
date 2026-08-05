@@ -18,10 +18,11 @@
 //    `ticket`           REFUSED — the board with no arg is `todo`
 //  Every refusal is plain words naming the view that does serve the arg.
 //
-//  NOTHING here is a second implementation.  views/todo/todo.js is the ONE home
-//  for the shared ground and this module requires it: the key/topic LEXER
-//  (shape, keyTopic), the board root (boardDir), the page-file ladder
-//  (pageFile), the byte read (readBytes), the extension order (EXTS), the arg
+//  NOTHING here is a second implementation.  CODE-030: shared/ticketpage.js is
+//  the ONE home of the page family and this module reads it DIRECTLY: the
+//  key/topic LEXER (shape, keyTopic), the board root (boardDir), the page-file
+//  ladder (pageFile), the byte read (readBytes), the extension order (EXTS).
+//  views/todo/todo.js keeps the rest of the shared ground: the arg
 //  LINE grammar (parseArgs — grammatical only; each view refuses its own
 //  non-classes), the whole-arg-line filter spell (spellWith/argLineWith) and
 //  the two click classifiers (navSpell, filterVal).  The meta-pair block is
@@ -55,9 +56,12 @@ const metaidx = require("../../shared/metaidx.js");    // TODO-003: the meta ind
 //  click classifiers).  todo.js does NOT require this module, so the edge is
 //  one-way and needs no lazy dance.
 const todo    = require("../todo/todo.js");
+//  CODE-030: the page family (lexer, root, file ladder, byte read) is the
+//  shared library now — read it DIRECTLY, not through the todo view.
+const page    = require("../../shared/ticketpage.js");
 
 const EMPTY32 = new Uint32Array(0);
-const EXTS = todo.EXTS;                    // the board's own .mkd-first order
+const EXTS = page.EXTS;                    // the board's own .mkd-first order
 
 //  tok32 (dog/tok/TOK.h): [31..27] tag (A+n)  [23..0] end byte offset.
 function tokPack(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
@@ -98,8 +102,8 @@ function targetSpell(board, pageDirRel, target) {
   const dot = base.lastIndexOf(".");
   const stem = dot > 0 ? base.slice(0, dot) : base;
   const ext = dot > 0 ? base.slice(dot + 1) : "";
-  if (ext && EXTS.indexOf(ext) >= 0 && todo.shape(stem) === "key" &&
-      todo.pageFile(board.dir, stem))
+  if (ext && EXTS.indexOf(ext) >= 0 && page.shape(stem) === "key" &&
+      page.pageFile(board.dir, stem))
     return "ticket " + stem;
   let rel;
   try { rel = pathlib.resolveInTree(target[0] === "/" ? "" : pageDirRel, target); }
@@ -117,7 +121,7 @@ function targetSpell(board, pageDirRel, target) {
 //  key → `ticket KEY`; a `[ref]`/`[/pocket/Page]` reflink → its refdef target's
 //  spell (ticket/cat).  The page's OWN key gets no self-link.
 function emitPage(sink, board, key, file, mode, a) {
-  const bytes = todo.readBytes(file);
+  const bytes = page.readBytes(file);
   if (bytes == null) return false;
   let body = bytes, toks = EMPTY32;
   if (mode !== "plain") {
@@ -142,8 +146,8 @@ function pageLinks(board, selfKey, pageDirRel, body, toks, a) {
   //  BE-054: the verb click is a context-less O (empty ctx = "here").
   const mint = (spell) => (spell && spell !== "ticket " + selfKey)
       ? utf8.Encode(SPELL.mintOspell("", spell)) : null;
-  const keySpell = (w) => (todo.shape(w) === "key" && w !== selfKey &&
-                           todo.pageFile(board.dir, w)) ? "ticket " + w : null;
+  const keySpell = (w) => (page.shape(w) === "key" && w !== selfKey &&
+                           page.pageFile(board.dir, w)) ? "ticket " + w : null;
   //  A bare ticket key is an `F` token — it links on its own.
   for (let i = 0; i < toks.length; i++)
     if (tokTagL(toks[i]) === "F" && tokEnd(toks[i]) > sta[i]) us[i] = mint(keySpell(word(i)));
@@ -217,7 +221,7 @@ function ticket() {
   const _be = (typeof be !== "undefined") ? be : null;
   const sink = _be && _be.sink;
   if (!sink) return;
-  const board = todo.boardDir();
+  const board = page.boardDir();
   if (!board)
     bad("there is no todo/ ticket tree above here — a ticket page needs one");
   const mode = ambient.format();
@@ -232,7 +236,7 @@ function ticket() {
   //  meant); without one it is the arg line verbatim.
   if (a.filters.length) {
     const rest = a.toks.map(function (t) {
-      return todo.shape(t) === "key" ? todo.keyTopic(t) : t; }).join(" ");
+      return page.shape(t) === "key" ? page.keyTopic(t) : t; }).join(" ");
     bad("'" + a.filters[0].key + ":" + a.filters[0].val + "' is a filter, and a" +
         " filter narrows a LISTING, never a page — write 'todo " + rest + "'" +
         " for that list; 'ticket' takes one ticket code and nothing else");
@@ -246,10 +250,10 @@ function ticket() {
         a.subject.w + "-123' for one ticket's page");
   //  Direct addressing ALWAYS works — open or closed, the page renders.
   const key = a.subject.w;
-  const file = todo.pageFile(board.dir, key);
+  const file = page.pageFile(board.dir, key);
   if (!file || !emitPage(sink, board, key, file, mode, a))
-    bad("there is no ticket " + key + " under todo/" + todo.keyTopic(key) +
-        "/ — 'todo " + todo.keyTopic(key) + "' lists that topic's open tickets");
+    bad("there is no ticket " + key + " under todo/" + page.keyTopic(key) +
+        "/ — 'todo " + page.keyTopic(key) + "' lists that topic's open tickets");
 }
 ticket.jab = "args";
 module.exports = ticket;

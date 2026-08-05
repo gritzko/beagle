@@ -27,14 +27,17 @@
 "use strict";
 
 const pathlib = require("../shared/util/path.js");   // JSQUE-016: be.js -> core/discover.js
-const ulog = require("../shared/ulog.js");
-//  CODE-028: THE climber, required at top level.  The cycle (resolve_hash
-//  requires this module) is safe: both sides FILL module.exports, never replace it.
+//  CODE-030: THE climber — and, since the anchor READER and the confining
+//  resolve() are the climb's own halves, this module is now their FACADE.
 const rh = require("./resolve_hash.js");
 const join = pathlib.join, dirname = pathlib.dirname;
 
-const BE = ".be";
-const WTLOG = "wtlog";
+//  CODE-030: forwarded onto core/resolve_hash.js — the names verbs/views call.
+const beRoot = rh.beRoot, resolveAnchor = rh.resolveAnchor, resolve = rh.resolve;
+const repoFromBe = rh.repoFromBe, projectFromQuery = rh.projectFromQuery;
+const projectFromPath = rh.projectFromPath;
+
+function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
 
 //  URI-016: the CLIMB LIMIT — `$BE_ROOT`, defaulting to `$HOME`.  THE climb
 //  (core/resolve_hash.js climb(), the only one left) never reaches it, so a repo
@@ -42,96 +45,6 @@ const WTLOG = "wtlog";
 //  there by construction.  [/wiki/URI] step 1 says an anchor is "still lower than
 //  $HOME"; BE_ROOT is that limit, made explicit — and "lower than" is STRICT, so
 //  $BE_ROOT/.be (the STORE) anchors neither a project root nor a worktree.
-function beRoot() { return io.getenv("BE_ROOT") || io.getenv("HOME"); }
-
-function statKind(p) {
-  try { return io.stat(p).kind; } catch (e) { return undefined; }
-}
-function isFile(p) { return statKind(p) === "reg"; }
-
-//  DOGRepoFromBe: the store root is everything before the first `/.be/`
-//  separator in a row-0 anchor URI path; falls back to stripping a
-//  trailing `.be` (and trailing slashes) when no `/.be/` is present.
-function repoFromBe(path) {
-  let p = path;
-  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
-  const i = p.indexOf("/" + BE + "/");
-  if (i >= 0) return p.slice(0, i);
-  if (p.endsWith("/" + BE)) p = p.slice(0, -(BE.length + 1));
-  else if (p.endsWith(BE)) p = p.slice(0, -BE.length);
-  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
-  return p;
-}
-
-//  DOGQueryProject: absolute `/<title>` or `/<title>/<branch>` → title;
-//  a non-absolute or empty query → "".
-function projectFromQuery(query) {
-  if (!query || query[0] !== "/") return "";
-  const rest = query.slice(1);
-  const j = rest.indexOf("/");
-  return j < 0 ? rest : rest.slice(0, j);
-}
-
-//  DOGProjectFromBe: the first path segment after `/.be/`, unless it is
-//  itself `.be` (a doubled store dir) — then treat as elided.
-function projectFromPath(path) {
-  let p = path;
-  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
-  const i = p.indexOf("/" + BE + "/");
-  if (i < 0) return "";
-  const seg = p.slice(i + BE.length + 2).split("/")[0] || "";
-  return seg === BE ? "" : seg;
-}
-
-//  Read row 0 of a wtlog and return { verb, uri }, or undefined.  A store
-//  anchor row 0 is a `get`/`repo` row pointing at the shared store.
-function row0Row(bePath) {
-  let row;
-  ulog.each(bePath, function (log) {
-    if (row === undefined) row = { verb: log.verb, uri: log.uri };
-  });
-  return row;
-}
-
-//  POST-027: wtlog.anchor()'s test — ONLY a get/repo row 0 anchors a store;
-//  a fresh wt's put row 0 stages a FILE, whose path is never a store.
-function isAnchorRow(r) { return !!r && (r.verb === "get" || r.verb === "repo"); }
-
-//  Resolve the anchor at `wt` (a dir holding `.be`) into store/project.
-//  Primary (`.be` is a dir): store == wt; project from the dir's row-0
-//  wtlog anchor when present, else single-shard scan is left to keeper.
-//  Secondary (`.be` is a file): store + project from row 0's redirect.
-function resolveAnchor(wt) {
-  const be = join(wt, BE);
-  const kind = statKind(be);
-  let bePath, storePath, project = "";
-
-  if (kind === "reg") {
-    //  Secondary worktree: the `.be` file is the wtlog.
-    bePath = be;
-    const r = row0Row(be);
-    if (isAnchorRow(r)) {
-      const p = new URI(r.uri);
-      storePath = repoFromBe(p.path);
-      project = projectFromQuery(p.query) || projectFromPath(p.path);
-    }
-    if (!storePath) storePath = wt;
-  } else {
-    //  Primary worktree: <wt>/.be/wtlog.
-    bePath = join(be, WTLOG);
-    storePath = wt;                          // colocated store == wt
-    const r = isFile(bePath) ? row0Row(bePath) : undefined;
-    if (r) {
-      const p = new URI(r.uri);
-      //  POST-027: only a get/repo row 0 is a store anchor; a fresh wt's put
-      //  row 0 (or a jab-posted primary's post row 0) stays store==wt.
-      if (isAnchorRow(r) && p.path) { const sp = repoFromBe(p.path); if (sp) storePath = sp; }
-      project = projectFromQuery(p.query) || projectFromPath(p.path || "");
-    }
-  }
-  return { root: storePath, wt: wt, bePath: bePath, storePath: storePath,
-           project: project };
-}
 
 //  URI-016: `find()` DELETED — it was a LEGACY NAME for [/wiki/URI] step 4, kept
 //  only because verb/view call sites spelled it `be.find`.  They now say what they
@@ -182,85 +95,6 @@ function projectRoot() { return rh.projectRoot(); }
 function workRoot()    { return rh.workRoot(); }
 function metaRoot()    { return rh.metaRoot(); }
 function todoRoot()    { return rh.todoRoot(); }
-
-//  BE-030: the tree NAME comes from `context` ALONE — its `.host` (a URI object,
-//  the nav scope a session STARTS with, navCwd(cwd) carrying BOTH the `//name`
-//  authority AND the in-repo path).  A `context.host` of ""/"." → the LAUNCH tree.
-function _ctxHost(context) {
-  if (context && typeof context === "object") return context.host || "";   // a URI
-  if (typeof context === "string") {                  // tolerate a raw string
-    try { return (uri._parse(context) || {}).host || ""; } catch (e) { return ""; }
-  }
-  return "";
-}
-
-//  BE-030: the context's PATH — the TRUSTED in-repo dir the untrusted `rel`
-//  resolves against (the old `base` arg, now folded INTO the context).  A path-less
-//  context (`//name`) → "" = the tree root.  Same URI-object-or-string tolerance
-//  as _ctxHost; an untrusted path must ride `rel`, never be planted here.
-function _ctxPath(context) {
-  if (context && typeof context === "object") return context.path || "";   // a URI
-  if (typeof context === "string") {
-    try { return (uri._parse(context) || {}).path || ""; } catch (e) { return ""; }
-  }
-  return "";
-}
-
-//  BE-030: `rel` is a PATH, not a URI — reject an authority (`//other`) or a
-//  scheme (`git://…`) via the URI binding (no hand-parsing).  A tree SWAP is the
-//  nav layer's job, NEVER the fs resolver's; this closes the `//OTHER` escape.
-//  URI-016/JS-075: the parse is a SCHEME/AUTHORITY GUARD ONLY — the PATH handed
-//  back is the arg VERBATIM.  `rel` names a file on disk, so a `#`/`?` in it is a
-//  literal byte of the NAME, not a fragment/query delimiter: taking `u.path` back
-//  truncated `a#b` -> `a` and silently checked out the wrong file.  Callers that
-//  do mean a URI (wtdir/frame) shed the query/fragment themselves and pass the
-//  bare `u.path` in, for which this is a no-op.
-function _relPath(rel) {
-  if (rel === undefined || rel === null || rel === "") return "";
-  const s = String(rel);
-  let u; try { u = uri._parse(s); } catch (e) { u = {}; }
-  if (u.scheme !== undefined)
-    throw "NAVESCAPE: rel path carries a scheme, not a path: " + s;
-  if (u.authority !== undefined)
-    throw "NAVESCAPE: rel path carries a // authority, not a path: " + s;
-  return s;
-}
-
-//  BE-030: resolve(context, rel) → the ABSOLUTE fs path, CONFINED to the CONTEXT's
-//  tree.  `context` (a URI object) carries BOTH the tree NAME (its authority) and
-//  the TRUSTED in-repo dir the relative arg resolves against (its PATH); `rel` is
-//  the UNTRUSTED relative arg.  Folds the old `base` INTO the context — the current
-//  dir was always the context's own path, so it is no longer passed twice; a caller
-//  whose context path is UNTRUSTED (wtdir) strips it into `rel`.  `rel` is
-//  AUTHORITY-BLIND (no `//other`, no `scheme:` — a tree swap can no longer ride the
-//  arg slot), and resolveInTree THROWS "NAVESCAPE" on any `..` that climbs above the
-//  tree root, so the result can NEVER leave the `<srcRoot>/name` cell.  A rooted `/x` rel
-//  addresses the tree root (drops the context path); ""/"." context host → the
-//  PROJECT ROOT ([/wiki/URI] step 2).  Throws on escape / bad name.
-function resolve(context, rel) {
-  const host = _ctxHost(context);
-  const relPath = _relPath(rel);                      // throws on a //other / scheme
-  //  A rooted `/x` addresses the tree root (context path dropped); else `rel`
-  //  resolves against the context's trusted in-repo path.  resolveInTree NORMALISES.
-  const basePath = relPath[0] === "/" ? "" : _ctxPath(context);
-  const sub = pathlib.resolveInTree(basePath, relPath);   // throws on climb-out
-  if (host === "" || host === ".") {
-    //  URI-016: `//` = the PROJECT ROOT — [/wiki/URI] step 2 says `///mtrel` IS
-    //  `$SRC_ROOT/mtrel`, so there is nothing to search for and no launch-tree
-    //  guess: no root means no repo, which is PROJNONE.
-    const wt = rh.projectRoot();
-    if (!wt) throw "PROJNONE: no project root above " + io.cwd() + " — no repo";
-    return sub ? join(wt, sub) : wt;
-  }
-  if (!pathlib.safeRel(host)) throw "NAVESCAPE: bad nav authority //" + host;
-  //  URI-016: refuse LOUDLY when there is no project root — an unguarded join()
-  //  fabricated the silent garbage path "null/NAME/..." at the confinement
-  //  chokepoint, which is the last place that should invent a path.
-  const work = workRoot();                   // step 2: $SRC_ROOT/work/WT
-  if (!work) throw "PROJNONE: no project root above " + io.cwd() + " — no repo";
-  const dir = join(work, host);
-  return sub ? join(dir, sub) : dir;
-}
 
 //  URI-011: wtdir(uriStr) → the ABSOLUTE dir a nav URI addresses, or null.
 //    //name[/sub]  → <srcRoot>/name/sub  (a worktree, confined below)
@@ -420,10 +254,7 @@ function wtpath(wt, rel) {
   return abs;
 }
 
-//  CODE-028: FILL the exports object, never REPLACE it — resolve_hash.js requires
-//  this module at top level, and a fresh literal here would freeze its handle.
-Object.assign(module.exports, {
-                   treeAt: treeAt, wtdir: wtdir, resolve: resolve, wtpath: wtpath,
+module.exports = { treeAt: treeAt, wtdir: wtdir, resolve: resolve, wtpath: wtpath,
                    beRoot: beRoot,
                    argRel: argRel, ctxSub: _ctxSub, ctxDir: ctxDir,
                    navCwd: navCwd, navTree: navTree, cwd: contextCwd,
@@ -435,4 +266,4 @@ Object.assign(module.exports, {
                    //  exported for wtlog.js / tests
                    repoFromBe: repoFromBe,
                    projectFromQuery: projectFromQuery,
-                   projectFromPath: projectFromPath });
+                   projectFromPath: projectFromPath };

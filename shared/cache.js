@@ -19,8 +19,8 @@
 //   4. Arming is LAZY and lands ON THE QUERY, before the caller computes: a
 //      write between the read and `fsw.dir` would otherwise be missed.
 //
-//  Reuse: the walk + sub-repo boundaries are classify.wtWalk (the same one
-//  wtScan drives), the ignore rules are util/ignore.js, path joins are
+//  Reuse: the walk + sub-repo boundaries are wtWalk below (the same one
+//  classify's wtScan drives), the ignore rules are util/ignore.js, path joins are
 //  core/discover.wtpath.  A nested repo is NOT armed by its parent's walk — it
 //  arms on its own first query and reaches the parent through the ancestor rule.
 //
@@ -40,9 +40,8 @@
 "use strict";
 
 const wtpath = require("../core/discover.js").wtpath;
-//  CODE-028: classify.js requires this module back; both FILL their exports.
 const ignorelib = require("./util/ignore.js");
-const classify = require("./classify.js");
+const join = require("./util/path.js").join;
 
 //  BRO-043: `jsrc` is a symlink to `.`, so `<root>/shared/cache.js` and
 //  `<root>/jsrc/shared/cache.js` load as TWO module instances of one file.  ALL
@@ -147,6 +146,62 @@ function armDir(abs) {
   if (S.spot[abs] === undefined) S.spot[abs] = S.rev;
 }
 
+//  --- THE worktree walk (CODE-030: moved here from classify.js) ------------
+//  Walk the worktree depth-first via io.readdir({recursive}) and report the
+//  names plus the nested-repo boundaries.  BRO-043 extracted it verbatim out of
+//  wtScan; it belongs HERE, next to the rev keying its memo — wtScan (which
+//  wants the FILE half) and arm() (which wants the DIR half) are its two
+//  callers, and classify.wtWalk is now a one-line re-export.  Skips
+//  `.gitignore`-matched paths + `.git`/`.be` meta + nested repos (a subdir
+//  holding its own `.git`/`.be` — a separate repo).
+//  → { names, nestedPrefixes, underNested }
+function wtWalk(wtRoot, ignore) {
+  //  TODO-006: the rev tree arms a wt by walking it, right before the caller
+  //  computes — take THAT walk instead of doing the same one twice.
+  const pre = takeWalk(wtRoot);
+  if (pre) return pre;
+  //  ONE PRUNING descent: io.readdir's cb `"skip"` directive cuts a subtree at
+  //  its dir and keeps scanning the siblings, so an ignored dir and a nested
+  //  repo are never enumerated and never stat'd.  The dir ENTRY itself is
+  //  delivered before its directive is read, so it stays in `names` (arm()
+  //  arms `.be/` off exactly that) — only the subtree goes.  A jab without the
+  //  directive reads `"skip"` as `"more"`: same answer, the old cost.
+  //  hidden:true — native scans dotfiles too (`.gitignore` is tracked);
+  //  only `.git`/`.be` are meta, filtered by the ignore matcher below.
+  //  Nested-repo dir prefixes are found in the SAME pass (a dir D with D/.git
+  //  or a D/.be FILE): the boundary is what stops the descent, so a sub's own
+  //  inner subs never enter the list — `underNested` answers for them off the
+  //  outermost prefix, which is all either caller ever asked of it.
+  const names = [], nestedPrefixes = [];
+  try {
+    io.readdir(wtRoot, { recursive: true, hidden: true, callback: function (nm) {
+      names.push(nm);
+      if (nm[nm.length - 1] !== "/") return "more";    // dirs decide descent
+      const dirRel = nm.slice(0, -1);
+      if (ignore.match(dirRel, true)) return "skip";
+      const full = wtpath(wtRoot, dirRel);
+      if (statKind(join(full, ".git")) !== undefined) {
+        nestedPrefixes.push(dirRel + "/"); return "skip";
+      }
+      const beKind = statKind(join(full, ".be"));
+      //  SUBS-049: a PRIMARY nested wt (`.be` DIR holding wtlog, a green-field
+      //  remote-get clone) is a repo boundary too — not only the `.be` FILE form.
+      if (beKind === "reg" || (beKind === "dir" &&
+          statKind(join(full, ".be/wtlog")) === "reg")) {
+        nestedPrefixes.push(dirRel + "/"); return "skip";
+      }
+      return "more";
+    } });
+  } catch (e) { names.length = 0; nestedPrefixes.length = 0; }
+  function underNested(rel) {
+    for (const p of nestedPrefixes) if (rel === p.slice(0, -1) || rel.indexOf(p) === 0) return true;
+    return false;
+  }
+  return { names: names, nestedPrefixes: nestedPrefixes, underNested: underNested };
+}
+
+function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
+
 //  Arm `wt` and every non-ignored dir under it that is not inside a nested repo,
 //  plus its own `.be/`.  THE divergence from `ignore.match`: `.be/` is
 //  RE-ADMITTED (its wtlog rows are a status input, so a `be put` from a second
@@ -159,7 +214,7 @@ function arm(wt) {
   armDir(wt);                                        // the spot itself first
   if (S.spot[wt] === undefined) return;              // unwatchable: no rev at all
   const ignore = ignorelib.load(wt);
-  const w = classify.wtWalk(wt, ignore);
+  const w = wtWalk(wt, ignore);
   for (const nm of w.names) {
     if (nm[nm.length - 1] !== "/") continue;         // dirs only
     const rel = nm.slice(0, -1);
@@ -176,7 +231,7 @@ function arm(wt) {
 
 //  TODO-006: hand the arming walk to the compute that follows the query — ONCE,
 //  and only while the spot still stands where the walk was done.  No hit, no
-//  slot, a moved spot: the caller walks itself (classify.wtWalk).
+//  slot, a moved spot: wtWalk above walks it itself.  CODE-030: internal now.
 function takeWalk(wt) {
   const s = S.walk;
   if (!live() || !s || s.wt !== wt) return null;
@@ -207,8 +262,5 @@ function stats() {
            root: S.root };
 }
 
-//  CODE-028: FILL the exports object, never REPLACE it — classify.js requires
-//  this module at top level and would freeze an empty handle.
-Object.assign(module.exports, {
-                   start: start, stop: stop, rev: rev, poll: poll,
-                   bumpRoot: bumpRoot, stats: stats, takeWalk: takeWalk });
+module.exports = { start: start, stop: stop, rev: rev, poll: poll,
+                   bumpRoot: bumpRoot, stats: stats, wtWalk: wtWalk };
