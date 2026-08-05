@@ -227,6 +227,7 @@ function Pager(fd, opts) {
   this.pasting = false;                          // inside a bracketed paste burst
   this.message = "";                             // a transient status note
   this.mouse = true;                             // BRO-005: mouse on (`m` toggles)
+  this._paintRows = 0; this._paintCols = 0;      // BRO-045: last painted geometry
   this.quit = false;
 }
 
@@ -434,6 +435,9 @@ Pager.prototype.render = function () {
   const rowsN = sz.rows > 1 ? sz.rows : 24;
   const cols = sz.cols > 0 ? sz.cols : 80;
   const viewRows = rowsN - 1;                    // last row = status/address bar
+  //  BRO-045: remember the geometry THIS frame paints — the key spin wakes when
+  //  tty.size leaves it (there is no signal API to hang a SIGWINCH on).
+  this._paintRows = rowsN; this._paintCols = cols;
   const rows = this.rows(cols);
   const v = this.view;
   //  CI-004: a view marked `end` (a live TAIL) shows its LAST PAGE, so a growing
@@ -1444,6 +1448,13 @@ Pager.prototype._tickDue = function () {
   const now = this._nowMs();
   return now ? now + t : 0;
 };
+//  BRO-045: has the terminal changed size since the LAST PAINTED frame?  Both
+//  axes count — cols re-wraps, rows alone still moves viewRows + the status bar.
+Pager.prototype._resized = function () {
+  const sz = tty.size(this.fd);
+  return (sz.rows > 1 ? sz.rows : 24) !== this._paintRows ||
+         (sz.cols > 0 ? sz.cols : 80) !== this._paintCols;
+};
 
 //  ---- the run loop ----------------------------------------------------------
 //  Enter raw mode, paint, block-poll a key, repaint — until q.  cook + restore
@@ -1480,6 +1491,9 @@ Pager.prototype.run = function () {
         if (n !== 0) break;
         if (due && this._nowMs() >= due) { this._refresh(true); break; }
         if (this._ciBadge() !== ci0) break;
+        //  BRO-045: ...and a RESIZE repaints without a key — one ioctl per
+        //  100ms io.read timeout, never per inner pass.
+        if (this._resized()) break;
       }
       //  Prepend any unfinished tail from the previous read, then feed; carry a
       //  still-unfinished mouse escape forward (a click can straddle reads).
