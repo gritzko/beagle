@@ -99,7 +99,10 @@ function pageFile(dir, key) {
 //  that is not a pair, so no body line can ever forge one.  The pairs the INDEX
 //  answers (`Now:`/`Sev:`) come off metaOf, not this scan; the scan is for what
 //  a packed row cannot give back — `Sub:`, a ticket CODE the render must read.
-const META_PAIR = /^([A-Z][a-z][a-z0-9]): (.*)$/;
+//  The indent is the ONE metaidx.js allows (`INDENT`): none, or four spaces —
+//  real [/wiki/StrictMark] pages indent the block, and a `^Key:` anchor read
+//  every ticket's meta as EMPTY (no [go] button, no `Sub:` nesting).
+const META_PAIR = /^(?: {4})?([A-Z][a-z][a-z0-9]): (.*)$/;
 function pageHead(file) {
   const out = { title: "", meta: {} };
   const b = readBytes(file);
@@ -121,6 +124,9 @@ function pageHead(file) {
   }
   return out;
 }
+//  Is this ONE line a head meta pair?  The site renderer's intro scan asks —
+//  the grammar stays here, never a second copy (verbs/mark/render.js pageMeta).
+function isMetaPair(line) { return META_PAIR.test(line); }
 //  A page's TITLE alone (the work view's post-message read).
 function pageTitle(file) { return pageHead(file).title; }
 
@@ -160,6 +166,6 @@ function stripMark(key, title) {
 module.exports = { EXTS: EXTS, CAP: CAP,
                    shape: shape, ticketKey: ticketKey, keyTopic: keyTopic,
                    boardDir: boardDir, pageFile: pageFile, readBytes: readBytes,
-                   pageHead: pageHead, pageTitle: pageTitle,
+                   pageHead: pageHead, pageTitle: pageTitle, isMetaPair: isMetaPair,
                    markSpan: markSpan, headerMark: headerMark,
                    stripMark: stripMark };

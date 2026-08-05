@@ -14,6 +14,10 @@
 //    opts.exists(relPath)  : optional fs probe (root-relative) → bool.
 "use strict";
 
+//  the head-meta matcher pageMeta skips lives in ONE place, with the board's
+//  own head read (shared/ticketpage.js) — never a second pair grammar here.
+const page = require("../../shared/ticketpage.js");
+
 //  ---- escaping (MARKu8bFeedEsc: & < > " -> entities; & first) ----
 function esc(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -330,6 +334,10 @@ function pageMeta(src, fallback) {
     if (/^#{1,6}\s/.test(ln)) continue;              // heading
     if (/^\s*!\[/.test(ln)) continue;                // image-only line
     if (/^\s*\[[^\]]+\]:\s/.test(ln)) continue;      // reference definition
+    //  the HEAD block is not prose: a ticket's `Now:`/`Rep:` pairs (the ONE
+    //  matcher, shared/ticketpage.js) and a page's `-- Author` byline.
+    if (page.isMetaPair(ln)) continue;
+    if (/^\s*--\s+\S/.test(ln)) continue;            // byline
     intro += (intro ? " " : "") + ln.trim();
   }
   //  first image: reference `![alt][label]` or inline `![alt](url)`.

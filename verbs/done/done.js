@@ -18,6 +18,8 @@ const hunkrows = require("../../shared/hunkrows.js");
 //  KEY→page probe (thin TOPIC/KEY.<ext>, fat TOPIC/KEY/README.<ext>).
 const todoView = require("../../views/todo/todo.js");
 const workView = require("../../views/work/work.js");
+//  TODO-005: the ONE meta-pair grammar (place included) — never a second regex.
+const metaidx = require("../../shared/metaidx.js");
 
 const EXTS = ["mkd", "md", "txt"];
 
@@ -111,19 +113,21 @@ function readmeFile(dir) {
 
 //  TODO-005 (ruling 2026-08-03): the `Now:` PAIR is the ticket's STATE — the
 //  [/meta/todo] pair TODO-004 boards from — so closing ADDS it, or CHANGES it in
-//  place when the head already carries one.  The pair block is the run of
-//  `Key: value` lines DIRECTLY under the header (todo.js pageHead's rule), so a
-//  fresh pair is inserted as the FIRST line of that run.  Returns the new text.
-const NOWRE = /^Now:(?: |$)/;
-const PAIRRE = /^[A-Z][a-z][a-z]: /;
+//  place when the head already carries one.  The block is read off the ONE
+//  matcher (shared/metaidx.js metaBlock), never a second line regex, so the pair
+//  this verb rewrites is the pair the index and the view read.  Returns the text.
+//  INDENT (ruling 2026-08-03, the metaidx grammar): a pair stands at column 0 or
+//  at exactly four spaces, and an EDIT KEEPS the indent it found — rewrite in
+//  place at the pair's own, insert at the block's own, and four spaces (the
+//  house default) on a page that carries no block yet.
+const INDENT = "    ";
 function setNow(text, mark) {
   const lines = text.split("\n");
-  let i = 1;
-  while (i < lines.length && (PAIRRE.test(lines[i]) || NOWRE.test(lines[i]))) {
-    if (NOWRE.test(lines[i])) { lines[i] = "Now: " + mark; return lines.join("\n"); }
-    i++;
-  }
-  lines.splice(1, 0, "Now: " + mark);
+  const block = metaidx.metaBlockText(text);
+  for (const p of block)
+    if (p.key === "Now") { lines[p.line] = p.indent + "Now: " + mark; return lines.join("\n"); }
+  const at = block.length ? block[0].line : 1;
+  lines.splice(at, 0, (block.length ? block[0].indent : INDENT) + "Now: " + mark);
   return lines.join("\n");
 }
 

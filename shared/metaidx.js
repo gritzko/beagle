@@ -229,10 +229,14 @@ const INDENT = "    ";                       // the ONE legal indent (or none)
 function tokTag(w) { return String.fromCharCode(65 + ((w >>> 27) & 0x1f)); }
 function tokEnd(w) { return w & 0xffffff; }
 
-//  metaBlock(bytes, toks) -> [{ key, value, ki, vi }] — the ticket's own meta
-//  pairs in file order.  `ki`/`vi` are the TOKEN INDICES of the `Key:` half and
-//  of the value half, so views/todo/todo.js can hang a click spell on each
-//  without re-deriving the grammar.  Pure: it reads, it never opens a file.
+//  metaBlock(bytes, toks) -> [{ key, value, ki, vi, line, indent }] — the
+//  ticket's own meta pairs in file order.  `ki`/`vi` are the TOKEN INDICES of
+//  the `Key:` half and of the value half, so views/todo/todo.js can hang a
+//  click spell on each without re-deriving the grammar; `line` (0-based) and
+//  `indent` ("" or the four spaces) are the same pair's PLACE, so a verb that
+//  REWRITES a pair (verbs/done/done.js setNow) edits it where it stands, at the
+//  indent it stands at, off this matcher instead of a second line regex.
+//  Pure: it reads, it never opens a file.
 //  The walk reads BYTES and decodes only the two tokens of a pair it keeps: a
 //  ticket is a whole page of tokens and the block ends within a few lines of
 //  the top, so decoding every token up front cost the sweep more than the parse.
@@ -241,10 +245,12 @@ function metaBlock(bytes, toks) {
   if (!toks || !toks.length) return out;
   const sta = (i) => (i ? tokEnd(toks[i - 1]) : 0);
   const txt = (i) => utf8.Decode(bytes.slice(sta(i), tokEnd(toks[i])));
-  const hasNl = (i) => {
-    for (let p = sta(i), e = tokEnd(toks[i]); p < e; p++) if (bytes[p] === 10) return true;
-    return false;
+  const nlCount = (i) => {                        // newlines a token carries
+    let n = 0;
+    for (let p = sta(i), e = tokEnd(toks[i]); p < e; p++) if (bytes[p] === 10) n++;
+    return n;
   };
+  const hasNl = (i) => nlCount(i) > 0;
   const isIndent = (i) => {                       // the ONE legal indent run
     const s = sta(i), e = tokEnd(toks[i]);
     if (e - s !== INDENT.length) return false;
@@ -255,7 +261,7 @@ function metaBlock(bytes, toks) {
     for (let p = sta(i), e = tokEnd(toks[i]); p < e; p++) if (bytes[p] > 32) return true;
     return false;
   };
-  let i = 0, header = false;
+  let i = 0, header = false, ln = 0;
   while (i < toks.length) {
     //  one LINE = the tokens up to and including the one carrying the newline.
     let end = i;
@@ -266,7 +272,8 @@ function metaBlock(bytes, toks) {
     if (m && k < end) {
       let v = "";
       for (let t = k + 1; t <= end; t++) v += txt(t);
-      out.push({ key: m[1], value: v.replace(/\n+$/, "").trim(), ki: k, vi: k + 1 });
+      out.push({ key: m[1], value: v.replace(/\n+$/, "").trim(), ki: k, vi: k + 1,
+                 line: ln, indent: k > i ? INDENT : "" });
     } else {
       let blank = true;
       for (let t = i; t <= end; t++) if (inked(t)) { blank = false; break; }
@@ -277,9 +284,20 @@ function metaBlock(bytes, toks) {
         header = true;
       }
     }
+    for (let t = i; t <= end; t++) ln += nlCount(t);
     i = end + 1;
   }
   return out;
+}
+
+//  TODO-005: the same block off a page ALREADY IN HAND — verbs/done/done.js has
+//  the text to flip the header, so it rewrites its `Now:` pair off THIS matcher
+//  (line + indent included) rather than a second line regex.  [] when unlexable.
+function metaBlockText(text) {
+  const bytes = utf8.Encode(text);
+  let toks;
+  try { toks = tok.parse(bytes, "mkd"); } catch (e) { return []; }
+  return metaBlock(bytes, toks);
 }
 
 function readBytes(file) {
@@ -600,5 +618,5 @@ module.exports = {
   //  token, never a render source), and the ONE token-level matcher underneath
   //  it — views/todo/todo.js hangs its click spells off THIS, so the rendered
   //  pair and the indexed pair are the same pair by construction.
-  pairs: pairs, metaBlock: metaBlock
+  pairs: pairs, metaBlock: metaBlock, metaBlockText: metaBlockText
 };

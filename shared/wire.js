@@ -820,4 +820,4 @@ function push(remoteUri, updates, packBytes) {
 
 module.exports = { fetch, push, pushSession, advertRefs, buildPushPack,
                    serveReader, classify, parseAdvLine, pickWant, isFullSha,
-                   drainToFile };
+                   drainToFile, selfBin };

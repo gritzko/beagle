@@ -908,7 +908,9 @@ function goSlot(parts, spans, off, t) {
   //  the click zone.  Only the 2-cell face is the button.
   off = span(parts, spans, off, " ", TAG_S);
   off = span(parts, spans, off, "[", TAG_D);
-  off = btnCell(parts, spans, off, FACE.go, "go", "", "work " + t.key + " " + rep);
+  //  The spell is `fork` (verbs/fork/fork.js) — `work` is the read-only forest
+  //  view and takes NO arg, so the button used to die WORKNONE on every click.
+  off = btnCell(parts, spans, off, FACE.go, "go", "", "fork " + t.key + " " + rep);
   off = span(parts, spans, off, "]", TAG_D);
   return span(parts, spans, off, "┄".repeat(FRAMESW - 3 - BTNW), TAG_S);
 }
