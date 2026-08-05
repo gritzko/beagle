@@ -228,6 +228,10 @@ function Pager(fd, opts) {
   this.message = "";                             // a transient status note
   this.mouse = true;                             // BRO-005: mouse on (`m` toggles)
   this._paintRows = 0; this._paintCols = 0;      // BRO-045: last painted geometry
+  //  BRO-034: a verb is IN FLIGHT — _statusLine draws the bar in the loading
+  //  band, showing loadSpell (the address being loaded, not the one leaving).
+  this.loading = false;
+  this.loadSpell = "";
   this.quit = false;
 }
 
@@ -494,17 +498,25 @@ Pager.prototype._statusLine = function (rows, scroll, viewRows, cols) {
   //  red (the user cd's out, nothing crashes).
   const invite = this._invite();
   const red = this.color && this._ctxMissing() ? ESC + "[31m" : "";
+  //  BRO-034: while a load is IN FLIGHT the bar wears the theme's banner band
+  //  (black on pale yellow) instead of the inverse video — never an inline SGR.
+  const thm = theme.DEFAULT;
+  const open = !this.color ? ""
+             : this.loading ? thm.loadOpen() : ESC + "[7m" + red;
+  const close = !this.color ? "" : this.loading ? thm.loadClose() : ESC + "[0m";
   if (this.mode === "command") {
     let line = invite + this.cmd;
-    return (this.color ? ESC + "[7m" + red : "") + this._fit(line, cols) +
-           (this.color ? ESC + "[0m" : "");
+    return open + this._fit(line, cols) + close;
   }
   //  DIS-060/[Nav]/BRO-024: the address bar INDICATES the current invocation as
   //  `<context>: <verb> <args>` — a verb call's RECORDED spell (args as entered),
   //  else derived: the nav'd FILE shows relative (`//WT/dog/: cat DOG.h`).
   const call = this.view && this.view.call;
   let left;
-  if (call && call.disp !== undefined) left = invite + call.disp;
+  //  BRO-034: a load in flight OWNS the bar — like a browser's, it shows the
+  //  address being LOADED, not the view it is about to replace.
+  if (this.loading && this.loadSpell) left = invite + this.loadSpell;
+  else if (call && call.disp !== undefined) left = invite + call.disp;
   else {
     const vu = this._verbUri();
     const rel = this._relToCtx(vu.uri);
@@ -525,8 +537,35 @@ Pager.prototype._statusLine = function (rows, scroll, viewRows, cols) {
     if (left.length > space - 1) left = left.slice(0, space - 1);
     line = left + " ".repeat(space - left.length) + right;
   }
-  return (this.color ? ESC + "[7m" + red : "") + this._fit(line, cols) +
-         (this.color ? ESC + "[0m" : "");
+  return open + this._fit(line, cols) + close;
+};
+
+//  BRO-034: repaint JUST the bottom bar and FLUSH it (io.writeAll straight to the
+//  tty) — the loading colour must hit the glass before the blocking verb call.
+Pager.prototype._paintBar = function () {
+  if (this._saved == null || !this.color || !this.view) return;   // headless driver
+  const sz = tty.size(this.fd);
+  const rowsN = sz.rows > 1 ? sz.rows : 24;
+  const cols = sz.cols > 0 ? sz.cols : 80;
+  //  BRO-034: park the cursor on a FRESH line at the TOP afterwards — whatever
+  //  the verb writes to the tty must not continue (and corrupt) the yellow band.
+  ttyWrite(this.fd, ESC + "[" + rowsN + ";1H" +
+           this._statusLine(this.rows(cols), this.view.scroll, rowsN - 1, cols) +
+           ESC + "[1;1H\n");
+};
+
+//  BRO-034: THE load gate — every pager-driven drive (click/follow, a typed
+//  `:spell`, `R` refresh, `-` back replay, a button act) paints the bar first.
+Pager.prototype._drive = function (spell, ctx, quiet) {
+  if (!this.driveSpell) return null;
+  //  `quiet` is the UNPROMPTED tick re-run (CI-004) — the user asked for nothing,
+  //  so it must not strobe the bar; every user gesture paints.
+  if (quiet) return this.driveSpell(spell, ctx);
+  this.loading = true;
+  this.loadSpell = spell;
+  try { this._paintBar(); } catch (e) {}
+  try { return this.driveSpell(spell, ctx); }
+  finally { this.loading = false; this.loadSpell = ""; }
 };
 
 //  CI-004: `v` — start the detected build+test in the CONTEXT worktree (the
@@ -781,7 +820,7 @@ Pager.prototype._runSpell = function (spell, ctxOverride) {
     const ctx0 = this._context();
     //  BRO-025: an O click drives the spell IN its recorded context (ctxOverride);
     //  a plain follow (a U nav row) threads none — the target is a full address.
-    const hunks = this.driveSpell ? this.driveSpell(s, ctxOverride || undefined) : null;
+    const hunks = this._drive(s, ctxOverride || undefined);
     if (!hunks || hunks.length === 0) { this.message = "no hunks: " + s; return; }
     this.pushView(hunks);
     //  DIS-060/URI-014: track the view as (verb, ADDRESS) split off the resolved
@@ -1103,7 +1142,7 @@ Pager.prototype._applySpell = function (cmd) {
 //  BE-039: `context` (the nav scope) rides through to the verb; "" for a slot-edit.
 Pager.prototype._driveApply = function (spell, verb, uri, context, nav, disp) {
   try {
-    const hunks = this.driveSpell ? this.driveSpell(spell, context) : null;
+    const hunks = this._drive(spell, context);
     if (!hunks || hunks.length === 0) { this.message = "no hunks: " + spell; return; }
     this.pushView(hunks);
     this.view.verb = verb;
@@ -1178,7 +1217,7 @@ Pager.prototype._refresh = function (quiet) {
   if (!spell || !spell.trim()) { this.message = "(nothing to refresh)"; return; }
   const scroll = v.scroll;
   try {
-    const hunks = this.driveSpell ? this.driveSpell(spell, ctx2) : null;
+    const hunks = this._drive(spell, ctx2, quiet);
     //  CI-004: the re-run RESTATES its marks (taken whatever it emitted, so none
     //  leak to the next view) — a job that settled since the last frame clears
     //  the tick here and the pager goes quiet by itself.  The `end` pin is NOT
@@ -1207,7 +1246,7 @@ Pager.prototype._actSpell = function (spell, ctxOverride) {
     //  TRACKED context, never _verbUri()'s scavenged hunk banner.
     //  BRO-025: a three-part O invite recorded its OWN context — that one wins.
     const ctx = ctxOverride || discover.navTree(this._context());
-    if (this.driveSpell) this.driveSpell(s, ctx || undefined);
+    this._drive(s, ctx || undefined);
     this._refresh();
     //  show WHAT ran instead of _refresh's "refreshed"; keep its error if any
     if (this.message === "refreshed") this.message = s;

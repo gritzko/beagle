@@ -229,7 +229,11 @@ const BANNER_SGR = "38;5;0;48;5;230";
 //                       cell wasn't painted.  This mirrors ANSIu8sFeedDelta
 //                       spelling the slot→DEFAULT delta.
 //  bannerOpen()/bannerClose() → the header band wrap.
+//  loadOpen()/loadClose()      → BRO-034: the LOADING address bar — the SAME
+//                       band (black on pale yellow), aliased, never a new pair.
 function makeTheme(name, slots) {
+  function bannerOpen() { return ESC + BANNER_SGR + "m"; }
+  function bannerClose() { return ESC + "0m"; }
   function sgr(letter) {
     const s = slots[letter];
     return s ? ESC + s + "m" : "";
@@ -254,8 +258,10 @@ function makeTheme(name, slots) {
     //  the columns the status row paints: date col = slot 'L', path col plain.
     dateSlot: "L",
     pathSlot: "S",
-    bannerOpen: function () { return ESC + BANNER_SGR + "m"; },
-    bannerClose: function () { return ESC + "0m"; },
+    bannerOpen: bannerOpen,
+    bannerClose: bannerClose,
+    loadOpen: bannerOpen,
+    loadClose: bannerClose,
   };
 }
 
