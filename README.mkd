@@ -56,12 +56,13 @@ JAB packs a lot of revision-control-specific bindings and APIs.
 
  2. You may also want to install a symlink, like `be -> jab` to use the `be` command.
  3. Clone the Beagle repo [itself][i] to `jsrc` anywhere from the current dir up.
-
+    Then, just for the fun of it, make a self-hosted beagle checkout.
     ````sh
-        git clone --recurse-submodules https://github.com/gritzko/beagle.git ~/jsrc
-        cd ~/jsrc && be status
+        git clone --recurse-submodules https://github.com/gritzko/beagle.git jsrc
+        mkdir beagle && cd beagle
+        be get https://github.com/gritzko/beagle.git && be status
     ````
-
+    The resulting `beagle` dir you may move anywhere, update with `be get`, etc.
  4. JAB picks the sources from `jsrc/` dirs in `$PWD` and up the parent chain (not `node_modules`).
     See the `jsrc` self-link in this repo; it lets Beagle revision-control itself.
  5. You may submodule beagle-ext into your project as `jsrc/` or make a `$HOME/jsrc` symlink.
