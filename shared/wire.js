@@ -127,14 +127,37 @@ function parseAdvLine(payload) {
 }
 
 //  --- ref matching -------------------------------------------------------
-//  Pick the want sha from the advert.  wantRef forms: "" (default branch),
-//  "heads/x"/"tags/x"/"refs/...", a 40-hex (want-by-hash).  Mirrors
-//  wcli_match_advert's preference: exact ref → HEAD sha → main → first head.
-function pickWant(refs, headSha, wantRef) {
+//  Pick the want sha from the advert.  wantRef forms: "" (default branch), a
+//  BARE branch name (`<url>?<branch>` — what get/head/patch hand in), then
+//  "heads/x"/"tags/x"/"refs/...", or a 40-hex (want-by-hash).  The default
+//  chain (HEAD sha → main → master → first head) is for the EMPTY wantRef ONLY.
+//  GET-061: candidate names for a NON-empty wantRef.  A bare `<name>` is a
+//  BRANCH first (`refs/heads/<name>`), then a tag (`refs/tags/<name>`) — the
+//  old lone `refs/<name>` guess matched no real advert, so every `?<branch>`
+//  fell through to the default chain and cloned the wrong branch silently.
+//  A `tags/x` also tries `refs/heads/tags/x`: a be store keys a tag as the ref
+//  `tags/x` and serve.js advertises EVERY key through branchlib.wireRef, i.e.
+//  as `refs/heads/tags/x` — so the git form misses on a be peer (it used to
+//  miss silently and clone the default branch).
+function wantCandidates(wantRef) {
+  if (wantRef.indexOf("refs/") === 0) return [wantRef];
+  if (wantRef.indexOf("tags/") === 0)
+    return ["refs/" + wantRef, "refs/heads/" + wantRef];
+  if (wantRef.indexOf("heads/") === 0) return ["refs/" + wantRef];
+  return ["refs/heads/" + wantRef, "refs/tags/" + wantRef];
+}
+function pickWant(refs, headSha, wantRef, where) {
   if (isFullSha(wantRef)) return { sha: wantRef, name: "", branch: "" };
   if (wantRef) {
-    const full = wantRef.indexOf("refs/") === 0 ? wantRef : ("refs/" + wantRef);
-    for (const r of refs) if (r.name === full) return refReturn(r);
+    for (const full of wantCandidates(wantRef))
+      for (const r of refs) if (r.name === full) return refReturn(r);
+    //  GET-061: an EXPLICITLY named ref that matches NOTHING is an error by
+    //  name — never another branch.  Substituting the default recorded a sha
+    //  under a branch it is not on (`?update#<main tip>` in the wtlog).
+    const kind = wantRef.indexOf("refs/") === 0 ? "ref"
+               : wantRef.indexOf("tags/") === 0 ? "tag" : "branch";
+    throw "wire.fetch: no " + kind + " `" + wantRef + "` on " +
+          (where || "the peer");
   }
   if (headSha) for (const r of refs) if (r.sha === headSha && isHead(r.name))
     return refReturn(r);
@@ -381,7 +404,7 @@ function fetchHttp(url, wantRef, haves) {
   //  CODE-020: shared advert drain (skip HTTP preamble, keep heads+tags).
   const { refs, headSha } = drainAdvert(memReader(advert),
     { keepTags: true, skipPreamble: true });
-  const want = pickWant(refs, headSha, wantRef || "");
+  const want = pickWant(refs, headSha, wantRef || "", url);
   if (!want) throw "wire.fetch: peer advertised no usable ref";
 
   //  POST the want/have/done body from a temp file (avoids a pipe deadlock).
@@ -460,7 +483,7 @@ function fetch(remoteUri, wantRef, haves, opts) {
     //  CODE-020: shared advert drain (spawn: no preamble, keep heads+tags).
     const { refs, headSha } = drainAdvert(reader, { keepTags: true });
 
-    const want = pickWant(refs, headSha, wantRef || "");
+    const want = pickWant(refs, headSha, wantRef || "", remoteUri);
     if (!want) throw "wire.fetch: peer advertised no usable ref";
 
     //  2. send want (caps on the first line), flush, haves, done.

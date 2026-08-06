@@ -75,7 +75,12 @@ function uploadPack(selector, rfd, wfd) {
   //  3. NAK then the RAW pack (buildPushPack = the shared want-minus-have
   //  closure + emit).  No wants (advert-only probe) → NAK + empty flush-close.
   if (!wants.length) {
-    w(wfd, pkt.frame("NAK\n"));
+    //  GET-061: the client may have GIVEN UP on the advert (a `?<branch>` that
+    //  names no advertised branch throws in pickWant) and closed the pipe — the
+    //  courtesy NAK then EPIPEs and the peer dumps a JS stack over the user's
+    //  plain-words error.  A hung-up client is a clean end of session, not a
+    //  serve fault.
+    try { w(wfd, pkt.frame("NAK\n")); } catch (e) {}
     return;
   }
   const pack = wire.buildPushPack(selector, wants[0], haves);

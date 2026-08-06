@@ -226,20 +226,36 @@ function seedRemote(rem, wt, t0, opts) {
   //  `git.pack`, so the shard dir must exist BEFORE it (the old tmp-pack path
   //  only needed `.be`), and an update opens the next fresh log id.
   let beDir = null, proj = null, shard = null, log0 = 1;
+  //  GET-061: remember what THIS run minted, so a failed fetch can shed it.
+  let madeBe = false, madeShard = false;
   if (!info) {
     beDir = join(wt, ".be");
+    madeBe = !exists(beDir);
     try { io.mkdir(beDir); } catch (e) {}
     //  GET-042: [Title] = the OFFICIAL URL basename (`…/jab.git` → `jab`);
     //  beagle→beagle URIs carry `?/title` (rem.proj).  "repo" only if both absent.
     proj = rem.proj || submount.titleFromUrl(rem.raw) || "repo";
     shard = join(beDir, proj);
+    madeShard = !exists(shard);
     try { io.mkdir(shard); } catch (e) {}
   } else {
     shard = store.shardDir(info.storePath, info.project);
     log0 = ingest.repackLogId(shard);
   }
-  const f = wire.fetch(rem.raw, rem.branch || "", null,
-                       { shard: shard, log0: log0, onStep: fetchProgress });
+  //  GET-061: a `?<branch>` naming NO advertised branch now FAILS here (it used
+  //  to substitute the default branch silently).  The green-field `.be`/shard
+  //  were minted BEFORE the fetch (the pack repacks straight into them), and a
+  //  half-made `.be` left behind poisons the obvious retry — shed exactly what
+  //  this run created, then rethrow the peer's message untouched.
+  let f;
+  try {
+    f = wire.fetch(rem.raw, rem.branch || "", null,
+                   { shard: shard, log0: log0, onStep: fetchProgress });
+  } catch (e) {
+    if (madeShard) { try { io.rmdir(shard, true); } catch (e2) {} }
+    if (madeBe) { try { io.rmdir(beDir, true); } catch (e2) {} }
+    throw e;
+  }
   let tip = f.want;
   if (!tip || !isFullSha(tip)) throw "be get: peer gave no tip";
   const branch = rem.branch || f.branch || "";
