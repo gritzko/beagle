@@ -111,13 +111,12 @@ function serveStore(selector) {
   return openServe(path, proj);
 }
 
-//  GIT-020 flat-store retry (mirrors wire.serveReader): a colocated FLAT store
-//  has no named shard — fall back to auto-detect when the named one is empty.
+//  GET-060 RULING 2: the GIT-020 "flat-store retry" is GONE — it re-opened the
+//  store project-less so shardDir would degrade to `.be` itself, which is the
+//  flat store the ruling retires.  A `?/<proj>` selector naming a shard the
+//  store does not have is now simply an empty read, not a second guess.
 function openServe(root, proj) {
-  let reader = store.open(root, proj);
-  if (proj && reader.resolveRef("") === undefined && !reader.refs().length)
-    reader = store.open(root, "");
-  return reader;
+  return store.open(root, proj);
 }
 
 //  POST-028: the receive-pack (PUSH) serve loop over (rfd, wfd) — the twin of
@@ -165,7 +164,9 @@ function receivePack(selector, rfd, wfd) {
   const pf = wire.drainToFile(rfd, rd.rest(), reader.shard);
   ingest.land({ packFile: pf.packFile, packLen: pf.packLen,
                 verified: pf.verified }, reader.shard);
-  const reader2 = store.open(reader.shard, "");
+  //  GET-060: re-open THAT shard by name (store.openShard), never `open(shard,
+  //  "")` — the latter only worked while a shard could pose as a store root.
+  const reader2 = store.openShard(reader.shard);
 
   //  4. per-ref CAS + FF gate, then report-status.
   const out = [pkt.frame("unpack ok\n")];

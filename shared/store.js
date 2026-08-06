@@ -12,8 +12,10 @@
 //  open(storePath, project) → reader where
 //    storePath = the store root (`<wt>` for a colocated primary, or the
 //                redirected store dir for a secondary wt; be.treeAt().storePath)
-//    project   = the shard name (`be.treeAt().project`); when empty the
-//                single shard dir under <store>/.be is auto-detected.
+//    project   = the shard name (`be.treeAt().project`); when empty, shardDir
+//                resolves one — the DEFAULT-titled shard, else the single
+//                shard dir under <store>/.be.  GET-060 RULING 2: the answer is
+//                always `.be/<shard>/`, never `.be` itself (no flat store).
 //  The reader exposes:
 //    getObject(sha)        → { type, bytes } | undefined   (inflate + delta chase)
 //    resolveRef(refOrBranch) → "<40hex>" | undefined        (refs ULOG)
@@ -49,6 +51,9 @@ const ingest = require("./ingest.js");       // DOG-027: the keeper.idx family
 const memidx = require("./memidx.js");       // DOG-027: the in-RAM fallback index
 const stats = require("./util/stats.js");    // CFOLD-001: env-gated read counters
 const join = pathlib.join;
+//  GET-060: the shard-path arithmetic (beDirOf/defaultTitle) reads the store
+//  path by NAME — through the ONE path lib, never a hand-rolled slice.
+const basename = pathlib.basename, dirname = pathlib.dirname;
 const isFullSha = shalib.isFullSha;
 const isZeroSha = shalib.isZeroSha;
 const hashlet60FromBytes = shalib.hashlet60FromBytes;
@@ -125,28 +130,63 @@ function indexPackByWalk(pk, fhi, ix, afterOff) {
   }
 }
 
-//  Locate the shard dir `<store>/.be/<project>/`.  When `project` is
-//  empty, auto-detect the single non-dotted subdir under `<store>/.be`.
-//  A colocated primary store IS `<wt>/.be`; the project shard sits inside.
+//  GET-060: the store `.be` dir of a `store` path, which is legitimately spelled
+//  EITHER way — the tree root (`<wt>`), or the `.be` dir itself ([/wiki/URI]'s
+//  record is `/home/gritzko/.be/`, and serve resolves a `be:<path>/.be` selector
+//  to exactly that).  Told apart by NAME.  The old `isDir(storePath)` probe
+//  answered for ANY dir that happened to exist, so a SHARD (or a bare wt) could
+//  pose as the store root — half of how a clone's pack landed in `.be/` itself.
+function beDirOf(storePath) {
+  return basename(storePath) === BE ? storePath : join(storePath, BE);
+}
+
+//  GET-060 RULING 2 (gritzko 2026-08-06): there is no flat store — a store
+//  `.be/` holds SHARDS and nothing else.  So a project-less resolution still
+//  answers a SHARD, and the name it defaults to is the WORKTREE's own dir name.
+//  That default is not invented here: submount.js:290 already titles a url-less
+//  sub `basename(subpath)`, and test/lib/repo-setup.sh documents the same rule
+//  for an in-place bootstrap ("the project (Title) defaults to the wt basename,
+//  so its refs/packs live in `.be/<name>/`").  "repo" is the last resort, the
+//  same one GET-042 hands a title-less clone.
+function defaultTitle(storePath) {
+  const b = basename(storePath);
+  const t = (b === BE) ? basename(dirname(storePath)) : b;
+  return (t && t !== "/" && t !== "." && t !== "..") ? t : "repo";
+}
+
+//  GET-060: a FLAT store — packs sitting directly in `.be/` — is retired, and
+//  silently reading it as an empty store would look like a wiped repo.  Say so
+//  by name, in plain words, with the move that fixes it.
+function flatStoreGuard(beDir, names) {
+  for (const nm of names) if (nm.slice(-7) === ".keeper")
+    throw "store: " + beDir + " keeps its packs directly in the store dir" +
+          " — that flat layout is retired; move them into a shard: " +
+          "mkdir " + beDir + "/<title> && mv " + beDir + "/*.keeper " +
+          beDir + "/*.keeper.idx " + beDir + "/refs " + beDir + "/<title>/";
+}
+
+//  Locate the shard dir `<store>/.be/<project>/`.  The answer is ALWAYS a
+//  `.be/<shard>/` path — never `.be` itself (RULING 2, above).  Resolution
+//  order when no project is named: the DEFAULT title's shard if it exists, then
+//  the single non-dotted subdir (a renamed worktree, a shard named otherwise),
+//  then the default title as the path a first WRITE must mint.
 function shardDir(storePath, project) {
   //  URI-016: a trailing slash is legitimate — [/wiki/URI]'s record spells `store`
   //  as `/home/gritzko/.be/` — but io.readdir(dir + "/") returns every name with
   //  its FIRST CHARACTER EATEN (array form, L165), so a pack lists as
   //  `000000001.keeper` and mmap ENOENTs.  Normalise here, the one choke point.
   storePath = String(storePath).replace(/\/+$/, "") || "/";
-  let beDir = join(storePath, BE);
-  if (!isDir(beDir)) {
-    //  storePath might already point at the .be dir (or be the shard).
-    if (isDir(storePath)) beDir = storePath;
-  }
-  if (project) {
-    const cand = join(beDir, project);
-    if (isDir(cand)) return cand;
-  }
-  //  Auto-detect: the single project subdir (skip dotted, like .lock).
-  let found;
+  const beDir = beDirOf(storePath);
+  //  A NAMED project is the anchor's own word — take it, minted or not.
+  if (project) return join(beDir, project);
+  const def = join(beDir, defaultTitle(storePath));
+  if (isDir(def)) return def;
+  //  Auto-detect: the single project subdir (skip dotted, like .lock).  ONE
+  //  readdir also carries the flat-store witness (a loose `.keeper`).
+  let found, names = [];
   try {
     io.readdir(beDir, function (name) {
+      names.push(name);
       if (name[name.length - 1] !== "/") return "more";
       const base = name.slice(0, -1);
       if (!base || base[0] === ".") return "more";
@@ -154,9 +194,18 @@ function shardDir(storePath, project) {
       return "more";
     });
   } catch (e) { /* */ }
-  //  If a project was named but the dir was not found, last resort: the
-  //  beDir itself (single-shard flat store).
-  return found || (project ? join(beDir, project) : beDir);
+  if (found) return found;
+  flatStoreGuard(beDir, names);
+  return def;                      // the shard a first write mints
+}
+
+//  GET-060: open a reader ON a shard path (`.be/<title>/`) — the one honest
+//  spelling for "this exact shard", split back into (store `.be`, title).  The
+//  old `store.open(<shard>, "")` leaned on shardDir's isDir(storePath) guess to
+//  let a shard pose as a store root, which is the flat store RULING 2 retires.
+function openShard(shardPath) {
+  const p = String(shardPath).replace(/\/+$/, "");
+  return open(dirname(p), basename(p));
 }
 
 //  DOG-027: readers holding an OPEN index register here; the session loop
@@ -286,6 +335,10 @@ function open(storePath, project) {
   //  per the source under `onDisk`.
   function locate(sha) {
     const bytes = (typeof sha === "string") ? hexDecode(sha) : sha;
+    //  GET-060: an empty/short sha is a MISS in plain words — it used to blow
+    //  up two frames deeper as `TypeError: Invalid argument type in ToBigInt
+    //  operation` (hexDecode("") yields zero bytes, so sha20[0] is undefined).
+    if (!bytes || bytes.length < 20) return undefined;
     const h = hashlet60FromBytes(bytes);
     const lo = h << 4n;
     const hi = lo | 0xfn;
@@ -731,7 +784,8 @@ function ensureShard(shard) {
   if (!exists(path)) createShard(shard);
 }
 
-module.exports = { open: open, closeAll: closeAll, shardDir: shardDir, frameSha: frameSha,
+module.exports = { open: open, openShard: openShard, closeAll: closeAll,
+                   shardDir: shardDir, defaultTitle: defaultTitle, frameSha: frameSha,
                    hashlet60FromBytes: hashlet60FromBytes,
                    TYPE_NAME: TYPE_NAME, NAME_TYPE: NAME_TYPE,
                    createShard: createShard, set: set, tombstone: tombstone,

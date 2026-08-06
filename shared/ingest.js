@@ -534,7 +534,14 @@ function logName(n) {
 
 //  PATCH-011: land a pack into an EXISTING shard as the next-numbered pack-log,
 //  OBJECTS ONLY — no refs append (patch's fetch leg must not move local tips).
+//  GET-060 RULING 2: a store `.be/` holds SHARDS only, so every writer MINTS
+//  the shard dir it is about to write into — `.be/<title>/` exists because a
+//  write created it, never because a resolver degraded to the store root.
+//  io.mkdir is parents-creating and idempotent (probed 2026-08-06).
+function mintShard(shard) { try { io.mkdir(shard); } catch (e) {} }
+
 function land(pack, shard) {
+  mintShard(shard);                //  GET-060: the shard is the writer's to mint
   //  KEEP-006: git.pack already wrote the logs AND re-laddered the index runs.
   if (isRepacked(pack)) return;
   let tgt = appendTarget(shard);
@@ -584,7 +591,7 @@ function land(pack, shard) {
 //  pack-log, and append the new tip to the shard's refs (remote-track + the
 //  local `post ?#` trunk row).  Used by the remote re-get (update) path.
 function add(pack, shard, remoteUri, tip) {
-  land(pack, shard);   // PATCH-011: the shared objects-only landing core (GET-044: file|mem)
+  land(pack, shard);            //  GET-060: land() mints the shard dir   // PATCH-011: the shared objects-only landing core (GET-044: file|mem)
   //  JS-073: append the new tip rows via ulog.append (native in-place booked
   //  append) — survivors keep their ORIGINAL ts; only the new rows get a stamp.
   //  URI-013: `origin` row LEFT hand-composed ([URI-009] present-empty `?` +
@@ -601,6 +608,7 @@ function add(pack, shard, remoteUri, tip) {
 //  shape clone/add write, so store.eachRemote picks it up).  `shard` = the
 //  project shard dir; `remoteUri` the raw push target; `tip` the new 40-hex sha.
 function saveRemoteRef(shard, remoteUri, tip) {
+  mintShard(shard);             //  GET-060: the refs log lives IN the shard
   //  JS-073: in-place native append preserves every survivor's ts; no re-drain,
   //  no restamp (the old writeUlog re-fed rows with no ts, bumping them to now).
   //  URI-013: `origin` row LEFT hand-composed ([URI-009] present-empty `?` +
@@ -611,6 +619,7 @@ function saveRemoteRef(shard, remoteUri, tip) {
 
 module.exports = { clone, add, land, reindexShard, buildIndex, writeBytes,
                    packLogBytes, logName, fileIdOf, saveRemoteRef, repackLogId,
+                   mintShard,
                    KEEP_LOG_MAX, MMAP_CAP, appendRecords, indexAppended,
                    appendTarget,
                    //  DOG-027: the keeper.idx family surface (idxmaint retired)

@@ -176,6 +176,10 @@ function writePack(shard, wtRoot, commitBody, rootTreeSha, treeBodies, decisions
   }
   cap += 64;
 
+  //  GET-060 RULING 2: the commit's pack lands in `.be/<title>/`, so MINT that
+  //  shard here — an in-place bootstrap (`mkdir .be` + `jab post`) has nothing
+  //  but the bare `.be` at this point, and a store root is not a shard.
+  ingest.mintShard(shard);
   //  JS-117: append to the tail of the highest log under the size threshold,
   //  else open a fresh NNNNNNNNNN.keeper (empty shard / over cap).
   const tgt = ingest.appendTarget(shard);

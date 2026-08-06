@@ -323,11 +323,11 @@ function mount(opts) {
     //  canonical store).  `store.open(beDir, title)` resolves `<beDir>/<title>`.
     let havePin = false;
     if (exists(join(shard, "0000000001.keeper"))) {
-      //  SUBS-046: `store.open(beDir, title)` names the sibling shard; but a
-      //  project-less/unnamed source (jab refs at `.be/refs`) resolves under the
-      //  empty project too — try both so an already-local pin reuses w/o fetch.
+      //  SUBS-046: `store.open(beDir, title)` names the sibling shard.
+      //  GET-060 RULING 2: the second try — `store.open(shard, "")` for "a
+      //  project-less/unnamed source (jab refs at `.be/refs`)" — is GONE; that
+      //  flat store no longer exists, and the named open above resolves it.
       try { havePin = !!store.open(beDir, title).getObject(pin); } catch (e) {}
-      if (!havePin) try { havePin = !!store.open(shard, "").getObject(pin); } catch (e) {}
     }
 
     //  GET-047 ruling: a WORKTREE source's sub is the worktree at the composed

@@ -208,6 +208,25 @@ function fetchProgress(s) {
          Math.round(s.inBytes / 1048576) + " MB in, " + s.logs + " log(s)\n");
 }
 
+//  GET-060: does this wt's `.be` ANCHOR anything, or is it just an empty dir?
+//  Two witnesses, either one is enough:
+//    - its own WTLOG — the anchor + tip rows this wt's history lives in.  A
+//      SECONDARY wt's `.be` redirect FILE *is* that wtlog (info.bePath names
+//      it), so GET-041's redirect keeps taking the update leg, untouched.
+//    - anything at all inside the store `.be` dir: a `<proj>/` shard, `refs`,
+//      a pack.  A `mkdir .be` bootstrap dir holds NONE of that.
+//  shardDir is deliberately NOT asked: under RULING 2 it always ANSWERS a shard
+//  path (`.be/<title>/`, minted or not), which is the right answer for a WRITE
+//  and no answer at all to "is this wt established" — that is what `.be`'s own
+//  contents say.  The probe also stays clear of the naming rule, so the leg
+//  choice does not move if the default title ever changes.
+function anchoredWt(info) {
+  if (exists(info.bePath)) return true;
+  let names = [];
+  try { names = io.readdir(dirname(info.bePath)); } catch (e) { names = []; }
+  return names.length > 0;
+}
+
 function seedRemote(rem, wt, t0, opts) {
   opts = opts || {};
   //  GET-041: an ESTABLISHED worktree is NEVER a clone destination — its `.be`
@@ -216,8 +235,14 @@ function seedRemote(rem, wt, t0, opts) {
   //  Resolve the anchor AT wt and land the pack in THAT shard; green-field
   //  (no own anchor — an ANCESTOR anchor is the test-firewall `.be`, not this
   //  wt) fresh-clones into `<wt>/.be` as before.
+  //  GET-060: and `.be` EXISTS is not `.be` ANCHORS — an own but UNANCHORED
+  //  `.be` (the `mkdir .be` bootstrap dir: no wtlog, no shard, no refs) is
+  //  green field too.  treeAt calls it established, so the UPDATE leg used to
+  //  run on a first-ever clone: the pack landed FLAT in `.be/`, `appendGetRow`
+  //  wrote the tip row alone (no `file:…/.be/<proj>/` anchor row), no shard was
+  //  minted, and the run died before any checkout.
   let info; try { info = be.treeAt(wt); } catch (e) { info = undefined; }
-  if (info && info.wt !== wt) info = undefined;
+  if (info && (info.wt !== wt || !anchoredWt(info))) info = undefined;
   //  GET-044: resolve the DESTINATION shard dir BEFORE the fetch so wire.fetch
   //  can STREAM the pack into a `tmp_pack_*` there (same FS → atomic land),
   //  bounded RSS.  Green-field lands in `<wt>/.be` (proj is pack-independent);
@@ -603,7 +628,12 @@ function fanoutWholeTree(ctx, r, wt, force) {
   //  baseline tree (so the leaf has the blob to weave-merge a dirty edit).
   const newTree = r.k.commitTree(r.tip);
   if (!newTree) throw "be get: tip " + r.tip + " has no tree";
-  const oldTree = (r.fresh || force) ? "" : r.k.commitTree(r.oldTip || "") || "";
+  //  GET-060: NO baseline (a fresh clone, a --force reset, or a wt whose log
+  //  carries no get/post row yet) means NO old tree — never a `commitTree("")`,
+  //  which is the empty sha that used to reach `locate` and raise a bare
+  //  `TypeError: Invalid argument type in ToBigInt operation`.
+  const oldTree = (r.fresh || force || !isFullSha(r.oldTip)) ? ""
+        : (r.k.commitTree(r.oldTip) || "");
 
   //  GET-058: the JSQUE-014 dirty-overlap PRE-PASS (GETOVRL) is GONE — `To Wo`
   //  (theirs adds, ours created) is a WEAVE3 cell of the table, not a refusal.

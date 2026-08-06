@@ -571,12 +571,10 @@ function serveReader(localServe) {
   const storePath = u.path || "";
   let proj = u.query || "";
   if (proj && proj[0] === "/") proj = proj.slice(1);
-  let reader = store.open(storePath, proj);
-  //  GIT-020: a colocated FLAT store (in-place `jab post` `.be`, NO `<proj>`
-  //  subdir) has no named shard — retry with auto-detect when it is empty.
-  if (proj && reader.resolveRef("") === undefined && !reader.refs().length)
-    reader = store.open(storePath, "");
-  return reader;
+  //  GET-060 RULING 2: the GIT-020 flat-store retry (re-open project-less so
+  //  shardDir degrades to `.be` itself) is GONE — there is no flat store to
+  //  fall back to, and a project-less open resolves a NAMED shard now.
+  return store.open(storePath, proj);
 }
 
 //  markReachable(reader, roots, seen): flood the object closure reachable from
