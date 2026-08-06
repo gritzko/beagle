@@ -12,6 +12,7 @@
 "use strict";
 
 const pathlib = require("./util/path.js");
+const ambient = require("./ambient.js");            // LOG-005: the run's start ts
 const join = pathlib.join, dirname = pathlib.dirname;
 
 //  BRO-012: `todo/<TOPIC>/<KEY>.<ext>` layout + the extension probe order.
@@ -64,6 +65,19 @@ function findFile(dir, rel) {
   return null;
 }
 
+//  LOG-005: ONE be.navCwd(root) per RUN, not one per ticket code — navCwd →
+//  treeAt re-parses the whole project `.be` per call (90% of `jab log`).  Keyed
+//  by (be.now, dir): be.now is the run's start ts (loop.js mints it per verb
+//  invocation), so no mutating verb ever reads the previous run's tree.
+let NAVMEMO = { run: null, at: null };
+function navCtx(dir) {
+  const run = ambient.now();
+  if (NAVMEMO.run !== run) NAVMEMO = { run: run, at: Object.create(null) };
+  let c = NAVMEMO.at[dir];
+  if (c === undefined) c = NAVMEMO.at[dir] = be.navCwd(dir);
+  return c;
+}
+
 //  BRO-012: resolve an issue key → a `cat://<name>/todo/<TOPIC>/<KEY>.<ext>` nav
 //  URI, or null (a missing ticket = a quiet no-op).  URI-016: there is no root
 //  ORDER any more — be.todoRoot() is the ONE ticket tree, `projectRoot()+"/todo"`,
@@ -83,7 +97,7 @@ function ticketUri(key) {
   if (!hit) return null;
   //  navCwd(root) → the root's `//name` context (authority carries its own
   //  `//`); a present authority roots the path, else a plain `cat:<path>`.
-  const ctx = be.navCwd(root);
+  const ctx = navCtx(root);
   let a; try { a = ctx ? uri._parse(ctx).authority : undefined; } catch (e) { a = undefined; }
   const p = a !== undefined ? "/" + hit : hit;
   return URI.make("cat", a, p) || ("cat:" + hit);

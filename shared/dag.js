@@ -280,13 +280,23 @@ function isAncestor(keeper, ancSha, descSha, remoteIx) {
 //  fallback), 0n when unreadable / no epoch.  Shared with subs.js so the
 //  advanced-sub `mod` row stamps the sub-tip commit ts (SUBS-030) using the
 //  SAME convention as the ahead/behind rows above.
+//  LOG-005: memoised per (keeper, sha) — a commit is immutable, and the log's
+//  newest-first sort asks n log n times (2039 parseCommit for 287 commits).
+const TSMEMO = new WeakMap();                       // keeper -> { sha: ron60 }
 function commitTs(keeper, sha) {
-  let pc;
-  try { pc = keeper.parseCommit(sha); } catch (e) { return 0n; }
-  if (!pc) return 0n;
-  const secs = identEpoch(pc.author || pc.committer || "");
-  if (secs <= 0) return 0n;
-  try { return ron.of(secs * 1000); } catch (e) { return 0n; }
+  let memo = null;
+  if (keeper && typeof keeper === "object") {
+    memo = TSMEMO.get(keeper);
+    if (memo === undefined) TSMEMO.set(keeper, memo = Object.create(null));
+    const hit = memo[sha];
+    if (hit !== undefined) return hit;
+  }
+  let ts = 0n, pc;
+  try { pc = keeper.parseCommit(sha); } catch (e) { pc = null; }
+  const secs = pc ? identEpoch(pc.author || pc.committer || "") : 0;
+  if (secs > 0) try { ts = ron.of(secs * 1000); } catch (e) { ts = 0n; }
+  if (memo) memo[sha] = ts;
+  return ts;
 }
 
 module.exports = {
