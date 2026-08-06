@@ -2,3 +2,5 @@ build/
 tmp/
 build-*/
 Testing*/
+*.cmake
+*.cast

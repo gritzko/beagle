@@ -154,6 +154,21 @@ function figureClass(url) {
   return cls.join(" ");
 }
 
+//  A screencast is transcluded exactly like a picture: the same `![alt][l]`
+//  form, the same <figure>/<figcaption> pair, the same fragment styling channel
+//  (`todo.cast#right w40` lays out like `pic.jpg#rightw40`).  Only the mounted
+//  element differs — a .cast gets a [data-asciicast] node that
+//  assets/js/asciicast.js turns into an asciinema player, since no <img> can
+//  render a terminal recording.  The extension test drops the fragment first,
+//  so `todo.cast#w80` is still a cast.
+function urlExt(url) {
+  var hash = url.indexOf("#");
+  var path = hash < 0 ? url : url.slice(0, hash);
+  var m = /\.([A-Za-z0-9]+)$/.exec(path);
+  return m ? m[1].toLowerCase() : "";
+}
+function isCastExt(ext) { return ext === "cast"; }
+
 //  ---- the renderer ----
 function Renderer(opts) {
   this.out = [];
@@ -200,6 +215,14 @@ Renderer.prototype.emitLink = function (g, image) {
   var url = this.refs[g.label];
   var found = url !== undefined;
   if (image) {
+    //  A mid-sentence cast mounts into a <span>: a <div> here would close the
+    //  enclosing <p>, and an inline picture is a bare <img> for the same reason.
+    if (found && isCastExt(urlExt(url))) {
+      this.lit('<span class="asciicast" data-asciicast="');
+      this.lit(emitUrl(url));
+      this.lit('" aria-label="'); this.escf(g.text); this.lit('"></span>');
+      return;
+    }
     this.lit('<img src="');
     if (found) this.lit(emitUrl(url));
     this.lit('" alt="'); this.escf(g.text); this.lit('">');
@@ -224,12 +247,20 @@ Renderer.prototype.emitLink = function (g, image) {
 //  paraFlush); a mid-sentence image stays a bare inline <img> via emitLink.
 Renderer.prototype.emitFigure = function (text, label) {
   var url = this.refs[label];
+  var cast = url !== undefined && isCastExt(urlExt(url));
   var cls = url === undefined ? "" : figureClass(url);
+  if (cast) cls = cls ? "asciicast " + cls : "asciicast";
   this.lit("<figure");
   if (cls) { this.lit(' class="'); this.escf(cls); this.lit('"'); }
-  this.lit(">\n<img src=\"");
-  if (url !== undefined) this.lit(emitUrl(url));
-  this.lit('" alt="'); this.escf(text); this.lit('">\n');
+  this.lit(">\n");
+  if (cast) {
+    this.lit('<div data-asciicast="'); this.lit(emitUrl(url));
+    this.lit('" aria-label="'); this.escf(text); this.lit('"></div>\n');
+  } else {
+    this.lit('<img src="');
+    if (url !== undefined) this.lit(emitUrl(url));
+    this.lit('" alt="'); this.escf(text); this.lit('">\n');
+  }
   this.lit("<figcaption>"); this.escf(text); this.lit("</figcaption>\n");
   this.lit("</figure>\n");
 };

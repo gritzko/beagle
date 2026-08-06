@@ -38,13 +38,19 @@ function writeFile(p, text) {
 }
 
 //  Warn (never fail) on a referenced site-absolute asset (`/assets/...`) that is
-//  absent under html/ — the published site root.  Covers the stylesheet + images.
+//  absent under html/ — the published site root.  Covers the stylesheet, images
+//  and screencasts.
+//
+//  data-asciicast carries a cast the same way src carries an image, so it is
+//  probed too.  The `#fragment` is NOT part of the filename — it is the layout
+//  channel (`pic.jpg#rightw40`, `todo.cast#w80`) — so strip it before stat, or
+//  every laid-out asset false-warns.
 function checkAssets(html, base) {
   const seen = {};
-  const re = /(?:href|src)="(\/[^"]*)"/g;
+  const re = /(?:href|src|data-asciicast)="(\/[^"]*)"/g;
   let m;
   while ((m = re.exec(html)) !== null) {
-    const rel = m[1];
+    const rel = m[1].replace(/#.*$/, "");
     if (rel in seen) continue; seen[rel] = 1;
     if (/^\/\//.test(rel)) continue;            // //host — external, skip
     try { io.stat(base + rel); }
