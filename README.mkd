@@ -45,14 +45,31 @@ All Beagle commands start the pager/TUI by default.
 The only dependency is [JAB][j] the anti-bloat JavaScript runtime.
 JAB packs a lot of revision-control-specific bindings and APIs.
 
- 1. Build JAB (cmake) or [download][r] it from GitHub, install it in your `$PATH`. 
+ 1. Build JAB (cmake) or [download][r] it from GitHub, install it in your `$PATH`.
+        ````sh
+        git clone --recurse-submodules https://github.com/gritzko/jab.git
+        cd jab && mkdir build && cd build && cmake .. && make -j8
+        mkdir -p ~/bin && cp bin/jab ~/bin/ && ln -s ~/bin/jab ~/bin/be
+        export PATH=$PATH:~/bin
+        ````
  2. You may also want to install a symlink, like `be -> jab` to use the `be` command.
- 3. Clone the Beagle repo [itself][i].
+ 3. Clone the Beagle repo [itself][i] to `jsrc` anywhere from the current dir up.
+        ````sh
+        git clone --recurse-submodules https://github.com/gritzko/beagle.git ~/jsrc
+        cd ~/jsrc && be status
+        ````
  4. JAB picks the sources from `jsrc/` dirs in `$PWD` and up the parent chain (not `node_modules`).
     See the `jsrc` self-link in this repo; it lets Beagle revision-control itself.
- 5. `cd beagle-ext`
- 6. `be status`
- 7. You may submodule beagle-ext into your project as `jsrc/` or make `$HOME/jsrc` symlink.
+ 5. You may submodule beagle-ext into your project as `jsrc/` or make a `$HOME/jsrc` symlink.
+Once `be` runs, it clones itself; a Beagle clone takes a URI with a branch query.
+The tests live in a separate repo, checked out as a `test/` worktree.
+
+In case you have Beagle already, things look simpler. Just note that beagle checks things out into the *current* dir and all its commands recurse into submodules by default:
+        ````sh
+        mkdir beagle && cd beagle
+        be get 'https://github.com/gritzko/beagle.git'
+        cmake . && make -j20 test
+        ````
 
 ##  Customization and Speciation
 
