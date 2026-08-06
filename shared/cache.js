@@ -57,7 +57,7 @@ const S = globalThis.__BE_REV_TREE__ || (globalThis.__BE_REV_TREE__ = {
   seen: null,              // absolute dir → the rev last handed out (STATS only)
   token: 0,                // the no-watcher token counter (always fresh)
   drainBuf: null,          // the drain sink (one burst)
-  walk: null,              // TODO-006: the arming walk, published for its caller
+  walk: null,              // TODO-006: the arming walk + BE-064: its matcher
   root: "",
   st: { hits: 0, misses: 0, bumps: 0, watches: 0 },
 });
@@ -226,17 +226,26 @@ function arm(wt) {
   //  TODO-006: PUBLISH it — the caller queried this spot because it is about to
   //  classify that very wt, and that walk is the arming walk over again (6 s of
   //  a 10.6 s cold board).  ONE slot: the take below is the next thing to run.
-  S.walk = { wt: wt, rev: S.spot[wt], w: w };
+  //  BE-064: the MATCHER that produced the walk rides with it — classifyMerge
+  //  re-loaded it for the same root microseconds later (151 of 355 loads).
+  S.walk = { wt: wt, rev: S.spot[wt], w: w, ig: ignore };
 }
 
 //  TODO-006: hand the arming walk to the compute that follows the query — ONCE,
 //  and only while the spot still stands where the walk was done.  No hit, no
 //  slot, a moved spot: wtWalk above walks it itself.  CODE-030: internal now.
 function takeWalk(wt) {
+  const a = takeArm(wt);
+  return a ? a.w : null;
+}
+
+//  BE-064: THE take, for BOTH halves — the walk and the matcher it was walked
+//  with.  `arm` fires for topic dirs too, so the `s.wt` guard carries.  {w,ig}|null
+function takeArm(wt) {
   const s = S.walk;
   if (!live() || !s || s.wt !== wt) return null;
   S.walk = null;
-  return s.rev === S.spot[wt] ? s.w : null;
+  return s.rev === S.spot[wt] ? { w: s.w, ig: s.ig } : null;
 }
 
 //  THE query.  No watcher, or a dir that could not be armed → a FRESH TOKEN, so
@@ -263,4 +272,5 @@ function stats() {
 }
 
 module.exports = { start: start, stop: stop, rev: rev, poll: poll,
-                   bumpRoot: bumpRoot, stats: stats, wtWalk: wtWalk };
+                   bumpRoot: bumpRoot, stats: stats, wtWalk: wtWalk,
+                   takeArm: takeArm };

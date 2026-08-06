@@ -16,6 +16,8 @@
 //              tree walk — drives the mount gate + carries each sub's pin sha.
 //              Absent → every `.gitmodules`-declared path with a `<sub>/.be`
 //              mount file is visited (status's clean-recursion case).
+//    opts.subs : BE-064 — this repo's declared sub paths, ALREADY PARSED in file
+//              order (classifyMerge's `subPaths`).  Absent → parsed here.
 //
 //  Mirrors status.js's old emitRepo recursion tail: `.gitmodules` order is
 //  authoritative (KEEPSubsAt parses the blob top-to-bottom), the tree/mount
@@ -74,7 +76,8 @@ function joinPrefix(prefix, col) {
 function walk(repo, prefix, visit, opts) {
   opts = opts || {};
   const gitlinks = opts.gitlinks || null;
-  for (const subPath of gitmodulesOrder(repo.wt)) {
+  //  BE-064: the caller's already-parsed order when it has one, else parse.
+  for (const subPath of (opts.subs || gitmodulesOrder(repo.wt))) {
     //  Gate: a declared path is a live sub only when it is BOTH a tree gitlink
     //  (when a map is supplied) AND a mounted `<sub>/.be`.  Absent a map, the
     //  mount file alone gates (status's clean-recursion path).

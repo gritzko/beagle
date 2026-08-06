@@ -495,10 +495,14 @@ const UN_COL = { mod: "chg", pat: "chg", mrg: "chg", con: "chg",
 const ST_COL = { put: "chg", "new": "add", mov: "add", del: "del", rmv: "del" };
 
 //  TODO-005 r2: fold ONE repo's classify counts into the frame's tallies.
+//  BE-064: it also RETURNS the repo's declared sub paths — the merge parsed
+//  `.gitmodules` to classify the gitlinks, and foldSubs recurses that same list.
 function foldCounts(r, repo, log, k) {
-  const c = classify.classifyMerge(repo, log, k, {}).counts;
+  const m = classify.classifyMerge(repo, log, k, {});
+  const c = m.counts;
   for (const b in UN_COL) r.un[UN_COL[b]] += c[b] || 0;
   for (const b in ST_COL) { const n = c[b] || 0; r.st[ST_COL[b]] += n; r.staged += n; }
+  return m.subPaths;
 }
 //  TODO-005 r2 (BUG): the FILE counts are the WHOLE TREE's.  Bare `put` and bare
 //  `delete` both descend every mounted sub (SUBS-044, put's bareStageSubs and
@@ -517,20 +521,23 @@ function addFold(r, d) {
   for (const c in d.st) r.st[c] += d.st[c];
   r.staged += d.staged;
 }
-function foldSubs(r, repo) {
+//  BE-064: `subs` is this repo's declared sub paths, already parsed by the
+//  foldCounts that just ran over it — the walk takes them instead of re-parsing.
+function foldSubs(r, repo, subs) {
   recurse.walk(repo, "", function (subRepo) {
     const rv = CACHE.rev(subRepo.wt);
     const had = _subRev.get(subRepo.wt);
     if (had && had.rev === rv) { addFold(r, had.d); return; }
     const d = blankFold();
+    let subSubs;
     try {
       const sk = _reg.keeperFor(subRepo);
-      if (sk) foldCounts(d, subRepo, wtlog.open(subRepo), sk);
+      if (sk) subSubs = foldCounts(d, subRepo, wtlog.open(subRepo), sk);
     } catch (e) { /* an unreadable sub simply tallies nothing */ }
-    foldSubs(d, subRepo);                       // then its grandchildren
+    foldSubs(d, subRepo, subSubs);              // then its grandchildren
     _subRev.set(subRepo.wt, { rev: rv, d: d });
     addFold(r, d);
-  });
+  }, { subs: subs });
 }
 
 //  TODO-005: ONE status read per wt-having ticket (plus one per mounted sub) —
@@ -581,8 +588,8 @@ function fileStat(w, tp) {
     if (k && log) {
       f = { un: { chg: 0, add: 0, del: 0 }, st: { chg: 0, add: 0, del: 0 },
             staged: 0, dirty: false };
-      foldCounts(f, repo, log, k);
-      foldSubs(f, repo);
+      const subs = foldCounts(f, repo, log, k);   // BE-064: its parsed subs
+      foldSubs(f, repo, subs);
       f.dirty = (f.un.chg + f.un.add + f.un.del) > 0;
     }
   } catch (e) { f = null; }

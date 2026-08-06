@@ -78,9 +78,11 @@ const isFullSha = shalib.isFullSha;
 //  memo); `wtWalk` here is the re-export, so call sites are unchanged.
 const wtWalk = cachelib.wtWalk;
 
-function wtScan(wtRoot, ignore) {
+//  BE-064: `walk` is an ALREADY-DONE walk of this root (the arming walk its
+//  caller took); absent, the one wtWalk above is run — the unchanged path.
+function wtScan(wtRoot, ignore, walk) {
   const out = {};            // rel → { ts, kind: 'f'|'x'|'l' }
-  const w = wtWalk(wtRoot, ignore);
+  const w = walk || wtWalk(wtRoot, ignore);
   const names = w.names, nestedPrefixes = w.nestedPrefixes, underNested = w.underNested;
 
   for (const nm of names) {
@@ -244,14 +246,19 @@ function expectedSha(reader, path, baseTipSha, theirsShas, cache) {
 //                status's wtScan already drops them on disk).
 //    wantConfirmed — POST-037: also return `confirmed`, the CONTENT-confirmed
 //                `ok` paths (the hash ran).  Default OFF.
-//  Returns { rows, counts, haveBase, baseTreeSha, gitlinks[, confirmed] }.
+//  Returns { rows, counts, haveBase, baseTreeSha, gitlinks, subPaths[, confirmed] }.
 function classifyMerge(be, wtlogReader, reader, opts) {
   opts = opts || {};
   const wtRoot = be.wt;
+  //  BE-064: the rev tree just armed this root — loading its matcher, walking it
+  //  with that.  Take the pair; a null slot falls back to the reads below.
+  const armed = cachelib.takeArm(wtRoot);
   //  SUBS-045: a real submodule is DECLARED in `.gitmodules`; an undeclared
   //  base-gitlink (the `be -> .` self-locator) must NOT be sub-classified.
-  const declaredSubs = new Set(gitmodules.paths(wtRoot));
-  const ignore = ignorelib.load(wtRoot);                    // JSQUE-016
+  //  BE-064: the parsed list is RETURNED too — recurse.walk wants the same one.
+  const subPaths = gitmodules.paths(wtRoot);
+  const declaredSubs = new Set(subPaths);
+  const ignore = armed ? armed.ig : ignorelib.load(wtRoot); // JSQUE-016
   const dropMeta = !!opts.skipMeta;
   const underNarrow = opts.underNarrow || null;
 
@@ -276,8 +283,9 @@ function classifyMerge(be, wtlogReader, reader, opts) {
     }
   }
 
-  //  2. wt scan ulog: rel → { ts, kind }.
-  const wt = wtScan(wtRoot, ignore);
+  //  2. wt scan ulog: rel → { ts, kind }.  BE-064: over the arming walk when
+  //  there was one — wtScan taking the slot itself is now this take.
+  const wt = wtScan(wtRoot, ignore, armed ? armed.w : null);
 
   //  3. put list ulog: staged put/del since the pd floor.  A move-form put
   //  carries a dest path in the fragment; a 40-hex fragment is a gitlink pin.
@@ -535,6 +543,7 @@ function classifyMerge(be, wtlogReader, reader, opts) {
 
   return { rows: rows, counts: counts, haveBase: haveBase, anyPd: anyPd,
            gitlinks: gitlinks, baseTreeSha: baseTreeSha, base: base,
+           subPaths: subPaths,                    // BE-064 (recurse.walk order)
            confirmed: confirmed || undefined };   // POST-037 (opt-gated)
 }
 
