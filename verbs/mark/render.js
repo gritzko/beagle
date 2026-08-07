@@ -265,6 +265,42 @@ Renderer.prototype.emitFigure = function (text, label) {
   this.lit("</figure>\n");
 };
 
+//  ---- meta pairs (MARK-015) ---------------------------------------------
+//  [/wiki/StrictMark]: a meta pair renders as a key-value ROW and the inline
+//  layer does NOT run inside it — the value is verbatim text.  The exception
+//  is the ticket-code keys [/meta/todo] registers: their value is a ticket
+//  code, and gritzko rules those must click through to the ticket page.
+var META_LINK_KEYS = { See: 1, Sub: 1, Dup: 1, On1: 1, On2: 1 };
+
+//  A ticket code -> its root-absolute page url, thin `todo/TOPIC/KEY.mkd`
+//  first, then fat `todo/TOPIC/KEY/README.mkd`; "" when no such page exists.
+Renderer.prototype.ticketHref = function (code) {
+  var stem = "todo/" + page.keyTopic(code) + "/" + code;
+  if (this.pageExists(stem)) return "/" + stem + ".html";
+  if (this.pageExists(stem + "/README")) return "/" + stem + "/README.html";
+  return "";
+};
+
+//  Emit a meta value, linking whole words that are ticket codes (the board's
+//  own lexer, page.shape — no second key grammar).  Everything else escapes.
+Renderer.prototype.metaValue = function (val, link) {
+  if (!link) { this.escf(val); return; }
+  var words = val.split(/(\s+)/);
+  for (var i = 0; i < words.length; i++) {
+    var w = words[i];
+    var href = page.shape(w) === "key" ? this.ticketHref(w) : "";
+    if (!href) { this.escf(w); continue; }
+    this.lit('<a href="'); this.escf(href); this.lit('">');
+    this.escf(w); this.lit("</a>");
+  }
+};
+
+Renderer.prototype.emitMetaPair = function (key, val) {
+  this.lit('<dl class="meta"><dt>'); this.escf(key + ":"); this.lit("</dt><dd>");
+  this.metaValue(val, META_LINK_KEYS[key] === 1);
+  this.lit("</dd></dl>\n");
+};
+
 //  inline render (mark_inline + mark_inline_cb): tokenize `text`, emit HTML.
 //  inline render: the scanner hands over markup and text separately (DOG-024),
 //  so pair the delimiters with a stack instead of recursing.  The opener names
@@ -429,6 +465,10 @@ function classify(line) {
   if (hm) { b.hrule = true; return b; }
   //  reference definition: [key]: ...
   if (/^\[[^\]]+\]:/.test(rest)) { b.refdef = true; return b; }
+  //  MARK-015: a meta pair is a LEAF block, never paragraph prose — the ONE
+  //  grammar (shared/ticketpage.js META_PAIR), never a second copy here.
+  var mp = page.META_PAIR.exec(rest);
+  if (mp) { b.marker = "meta"; b.metaKey = mp[1]; b.metaVal = mp[2]; return b; }
   //  4-char markers in the group after the indents (padded, any column):
   //  heading `#`, quote `>`, todo `-[x]`, ulist `-`, olist `N.`.
   var slot = line.substr(i, 4);
@@ -558,6 +598,10 @@ function renderBlocks(rd, src) {
     }
     if (b.hrule) { paraFlush(); enterLeaf(b.depth); rd.lit("<hr>\n"); continue; }
     if (b.refdef) continue;                    // collected in pass 1
+    if (b.marker === "meta") {                 // MARK-015: a leaf key-value row
+      paraFlush(); enterLeaf(b.depth);
+      rd.emitMetaPair(b.metaKey, b.metaVal); st.opener = false; continue;
+    }
     if (b.heading > 0) {
       paraFlush(); enterLeaf(b.depth);
       //  DOG-024: a full marker quad self-delimits, so a following gap

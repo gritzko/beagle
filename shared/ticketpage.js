@@ -167,5 +167,6 @@ module.exports = { EXTS: EXTS, CAP: CAP,
                    shape: shape, ticketKey: ticketKey, keyTopic: keyTopic,
                    boardDir: boardDir, pageFile: pageFile, readBytes: readBytes,
                    pageHead: pageHead, pageTitle: pageTitle, isMetaPair: isMetaPair,
+                   META_PAIR: META_PAIR,
                    markSpan: markSpan, headerMark: headerMark,
                    stripMark: stripMark };
