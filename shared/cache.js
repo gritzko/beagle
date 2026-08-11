@@ -71,7 +71,12 @@ function start(r) {
   let fd = -1;
   try { fd = fsw.init(); } catch (e) { fd = -1; }
   if (typeof fd !== "number" || fd < 0) { S.wfd = -1; S.spot = null; return false; }
-  S.wfd = fd; S.spot = {}; S.wdOf = {}; S.dirOf = {}; S.armed = {}; S.seen = {};
+  //  BE-066: Maps, not objects.  spot/wdOf/armed/seen take the SAME dir keys in
+  //  the SAME order, so they shared one hidden-class chain and every insert
+  //  re-cloned it — 245 M property copies (99% of the shape churn) per `todo`.
+  S.wfd = fd;
+  S.spot = new Map(); S.wdOf = new Map(); S.dirOf = new Map();
+  S.armed = new Map(); S.seen = new Map();
   S.root = r || "";
   try { S.drainBuf = io.buf(1 << 16); }
   catch (e) { stop(); return false; }
@@ -101,7 +106,7 @@ function bump(dir) {
   const n = ++S.rev;
   st.bumps++;
   for (let p = dir; ;) {
-    if (S.spot[p] !== undefined) S.spot[p] = n;
+    if (S.spot.has(p)) S.spot.set(p, n);
     const i = p.lastIndexOf("/");
     if (i <= 0) return;
     p = p.slice(0, i);
@@ -113,7 +118,7 @@ function bumpRoot() {
   if (!live()) return;
   const n = ++S.rev;
   st.bumps++;
-  for (const k in S.spot) S.spot[k] = n;
+  for (const k of S.spot.keys()) S.spot.set(k, n);
 }
 
 //  Drain every queued event and stamp it.  Called at the TOP of `rev`, so a
@@ -135,7 +140,7 @@ function poll() {
       if (r.wd === fsw.OVERFLOW) { bumpRoot(); continue; }
       //  kqueue reports name "" (rescan this dir) — for revs the dir is all we
       //  need, so the name is never read; an unclaimed wd (ABC-013) is ignored.
-      const d = S.dirOf[r.wd];
+      const d = S.dirOf.get(r.wd);
       if (d !== undefined) bump(d);
     }
   }
@@ -145,13 +150,13 @@ function poll() {
 //  brand-new spot is born fresh, never stale).  A dir that cannot be armed gets
 //  no spot: `rev` then hands out a token and the caller recomputes (ruling 3).
 function armDir(abs) {
-  if (S.wdOf[abs] !== undefined) return;
+  if (S.wdOf.has(abs)) return;
   let wd = -1;
   try { wd = fsw.dir(S.wfd, abs); } catch (e) { return; }
   //  wd 0 = a pre-[JAB-032] jab that cannot attribute events at all.
   if (typeof wd !== "number" || wd <= 0) return;
-  S.wdOf[abs] = wd; S.dirOf[wd] = abs; st.watches++;
-  if (S.spot[abs] === undefined) S.spot[abs] = S.rev;
+  S.wdOf.set(abs, wd); S.dirOf.set(wd, abs); st.watches++;
+  if (!S.spot.has(abs)) S.spot.set(abs, S.rev);
 }
 
 //  --- THE worktree walk (CODE-030: moved here from classify.js) ------------
@@ -218,9 +223,9 @@ function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefi
 //  The walk re-runs when the spot moved since the last one: that is exactly when
 //  a new subdir may have appeared, and the caller is recomputing anyway.
 function arm(wt) {
-  if (S.armed[wt] !== undefined && S.armed[wt] === S.spot[wt]) return;
+  if (S.armed.has(wt) && S.armed.get(wt) === S.spot.get(wt)) return;
   armDir(wt);                                        // the spot itself first
-  if (S.spot[wt] === undefined) return;              // unwatchable: no rev at all
+  if (!S.spot.has(wt)) return;                       // unwatchable: no rev at all
   const ignore = ignorelib.load(wt);
   const w = wtWalk(wt, ignore);
   for (const nm of w.names) {
@@ -230,14 +235,14 @@ function arm(wt) {
     if (w.underNested(rel)) continue;                // a nested repo arms itself
     armDir(wtpath(wt, rel));
   }
-  S.armed[wt] = S.spot[wt];
+  S.armed.set(wt, S.spot.get(wt));
   //  TODO-006: PUBLISH it — the caller queried this spot because it is about to
   //  classify that very wt, and that walk is the arming walk over again (6 s of
   //  a 10.6 s cold board).  ONE slot: the take below is the next thing to run.
   //  BE-064: the MATCHER that produced the walk rides with it — classifyMerge
   //  re-loaded it for the same root microseconds later (151 of 355 loads).
   dropWalk();                                        // STATUS-020: free a stale slot
-  S.walk = { wt: wt, rev: S.spot[wt], w: w, ig: ignore };
+  S.walk = { wt: wt, rev: S.spot.get(wt), w: w, ig: ignore };
 }
 
 //  TODO-006: hand the arming walk to the compute that follows the query — ONCE,
@@ -256,7 +261,7 @@ function takeArm(wt) {
   const s = S.walk;
   if (!live() || !s || s.wt !== wt) return null;
   S.walk = null;
-  if (s.rev === S.spot[wt]) return { w: s.w, ig: s.ig };
+  if (s.rev === S.spot.get(wt)) return { w: s.w, ig: s.ig };
   s.ig.close();          // STATUS-020: stale walk, and with it its matcher
   return null;
 }
@@ -267,18 +272,16 @@ function rev(path) {
   if (!live() || typeof path !== "string" || !path) return --S.token;
   poll();
   arm(path);
-  const r = S.spot[path];
+  const r = S.spot.get(path);
   if (r === undefined) return --S.token;
   //  STATS only: a query that gets the same rev this spot last answered is what
   //  a consumer's memo serves — the hit/miss line the pager prints.
-  if (S.seen[path] === r) st.hits++; else { st.misses++; S.seen[path] = r; }
+  if (S.seen.get(path) === r) st.hits++; else { st.misses++; S.seen.set(path, r); }
   return r;
 }
 
 function stats() {
-  let dirs = 0, spots = 0;
-  for (const k in (S.wdOf || {})) dirs++;
-  for (const k in (S.spot || {})) spots++;
+  const dirs = S.wdOf ? S.wdOf.size : 0, spots = S.spot ? S.spot.size : 0;
   return { hits: st.hits, misses: st.misses, drops: st.bumps, dirs: dirs,
            watches: st.watches, spots: spots, rev: S.rev, live: live(),
            root: S.root };

@@ -50,7 +50,19 @@ const branchlib = require("./branch.js");    // SUBS-050: the ONE branch codec
 const ingest = require("./ingest.js");       // DOG-027: the keeper.idx family
 const memidx = require("./memidx.js");       // DOG-027: the in-RAM fallback index
 const stats = require("./util/stats.js");    // CFOLD-001: env-gated read counters
+const shape = require("./util/shape.js");    // BE-066: hidden-class pinning
 const join = pathlib.join;
+
+//  BE-066: the object-read row literals, one pin per key SEQUENCE — every tree
+//  entry and every record read builds one, and an unpinned shape is re-cloned.
+const PIN_ENTRY = shape.pin(["mode", "name", "sha"]);          // readTree
+//  ...including the one git.tree hands the callback (JS-028's documented
+//  {mode, nameStart, nameEnd, sha, nextOff}) — a C-built object, pinned here.
+const PIN_GITENT = shape.pin(["mode", "nameStart", "nameEnd", "sha", "nextOff"]);
+const PIN_LEAF = shape.pin(["path", "mode", "sha", "kind"]);   // readTreeRecursive
+const PIN_LOC = shape.pin(["fileIdx", "offset", "type"]);      // locate
+const PIN_REC = shape.pin(["bytes", "type"]);                  // readRecord
+const PIN_OBJ = shape.pin(["type", "bytes"]);                  // getObject
 //  GET-060: the shard-path arithmetic (beDirOf/defaultTitle) reads the store
 //  path by NAME — through the ONE path lib, never a hand-rolled slice.
 const basename = pathlib.basename, dirname = pathlib.dirname;

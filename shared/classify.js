@@ -64,8 +64,21 @@ const expected = require("./expected.js");
 const cachelib = require("./cache.js");
 const gitmodules = require("./gitmodules.js");
 const ignorelib = require("./util/ignore.js");
+const shape = require("./util/shape.js");    // BE-066: hidden-class pinning
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
+
+//  BE-066: the per-FILE row literals of the merge, one pin per key SEQUENCE —
+//  every scanned file builds a wt row, a base row and (clean) an `ok` row.
+const PIN_WT = shape.pin(["ts", "kind", "full"]);              // wtScan
+//  ...over io.lstat's own row (JS-021's documented {size, mode, kind, mtime,
+//  atime}) — one per scanned file, C-built, pinned here.
+const PIN_STAT = shape.pin(["size", "mode", "kind", "mtime", "atime"]);
+const PIN_BASE = shape.pin(["sha", "kind", "mode"]);           // base/theirs leaf
+const PIN_OK = shape.pin(["bucket", "path", "ts", "oldSha",    // push: clean
+                          "mode", "eq", "clean"]);
+const PIN_MOD = shape.pin(["bucket", "path", "ts", "kind",     // push: dirty
+                           "oldSha", "onDisk", "inBase"]);
 
 //  --- wt scan ----------------------------------------------------------
 //  Walk the worktree depth-first via io.readdir({recursive}), lstat each
