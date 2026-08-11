@@ -164,6 +164,27 @@ function wtBlobSha(wtRoot, rel) {
   return shalib.frameSha("blob", content);
 }
 
+//  --- the restamp (STATUS-022) -----------------------------------------
+//  stampConfirmed(be, paths, ts) → THE one setMtime loop over a `confirmed`
+//  list: every path here was content-HASHED this run and proved equal to base,
+//  so `ts` — an ASSIGNED wtlog get/post row ts, never a resampled now, never a
+//  DIS-057 band slot — makes a truthful clean claim the next status confirms by
+//  membership.  `post` calls it with its assigned post row ts (POST-037), a
+//  `status!` with the wt's latest get/post row ts (STATUS-022).  A SYMLINK is
+//  never stamped (the GET-049/get.js:1099 rule): a link's clean claim is about
+//  its TARGET PATH, and a stamp there would be about bytes.  Returns the count.
+function stampConfirmed(be, paths, ts) {
+  if (!paths || !paths.length || ts == null) return 0;
+  const wtRoot = be.wt;
+  let n = 0;
+  for (const p of paths) {
+    const full = wtpath(wtRoot, p);
+    try { if (io.lstat(full).kind === "lnk") continue; } catch (e) { continue; }
+    try { io.setMtime(full, ts); n++; } catch (e) {}
+  }
+  return n;
+}
+
 //  --- patch-stamp axis (DIS-057) ---------------------------------------
 //  Each in-scope `patch` row sits at the TOP of a reserved 3-stamp band: the
 //  patch verb stamps every merged file's mtime to the row ceil-2ms (clean apply
@@ -728,4 +749,5 @@ function classifyDir(be, wtlogReader, keeperReader, scopePfx) {
 module.exports = { classify: classify, classifyDir: classifyDir,
                    classifyMerge: classifyMerge, isMeta: isMeta,
                    wtScan: wtScan, wtWalk: wtWalk, wtEqBase: wtEqBase,
+                   stampConfirmed: stampConfirmed,       // STATUS-022
                    patchStamps: patchStamps };

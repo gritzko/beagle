@@ -47,6 +47,7 @@ const ingest   = require("../../shared/ingest.js");    // GIT-016: remote-track 
 //  JAB-003: TRUE-hunk output via the shared columnar->hunk adapter (ctx.sink),
 //  retiring the ctx.out columnar path for post.
 const hunkrows = require("../../shared/hunkrows.js");
+const classify = require("../../shared/classify.js");  // STATUS-022: stampConfirmed
 //  BRO-030: the unified quad reporter (wiki/Status.mkd) — THE post banner
 //  speaks quad rows (shared/quad.js model, view/quadrender.js rows).
 const quadlib    = require("../../shared/quad.js");
@@ -994,9 +995,8 @@ function postOne(info, ctx, row) {
   //  next status confirms them by membership instead of re-hashing them.  Only
   //  content-confirmed paths are listed (never a stamp-set hit, never a dirty
   //  file), and the ts is the ASSIGNED row ts, never a resampled now.
-  for (const p of dres.confirmed || []) {
-    try { io.setMtime(wtpath(info.wt, p), rowTs); } catch (e) {}
-  }
+  //  STATUS-022: through THE one restamp loop, shared with `status!`.
+  classify.stampConfirmed(info, dres.confirmed, rowTs);
 
   //  BRO-030: the quad report is THE post banner (wiki/Status.mkd "not a
   //  flag"); a `--quad` flag is tolerated as a no-op.

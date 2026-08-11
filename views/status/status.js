@@ -33,6 +33,7 @@ const navlib   = require("../../shared/nav.js");        // URI-011: full-URI nav
 const quadlib  = require("../../shared/quad.js");       // BRO-030: the quad model
 const quadrender = require("../../view/quadrender.js"); // BRO-030: quad row render
 const cache    = require("../../shared/cache.js");      // STATUS-019: the rev tree
+const classify = require("../../shared/classify.js");   // STATUS-022: stampConfirmed
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
 const discover = require("../../core/discover.js");
 const submount = require("../../shared/submount.js");
@@ -278,7 +279,9 @@ const MEMO = new Map();                                 // repo.wt → {rows, st
 //  that moved with NO fs event under the repo (a post or fetch from a second wt
 //  on the same store) lives below `.be/`, which the watcher does not cover.
 function gatherRepo(repo, recurse, filter, pins) {
-  if (filter || !recurse) return gatherAll(repo, recurse, filter, pins);
+  //  STATUS-022: a `status!` read must RUN the classify (it stamps exactly what
+  //  that run content-hashed), so the force leg never takes the memo.
+  if (filter || !recurse || ambient.force()) return gatherAll(repo, recurse, filter, pins);
   const st = stateOf(repo, pins);
   const rv = cache.rev(repo.wt);
   const had = MEMO.get(repo.wt);
@@ -387,10 +390,21 @@ function gatherInto(list, repo, recurse, filter, pins) {
         : null;
   //  STATUS-014: a RECURSED sub takes its track column from the parent's
   //  track-tree gitlink pin (pins.track); base stays the sub's own cur.
+  //  STATUS-022: `status!` (verb-bang → be.force) asks classify for the paths it
+  //  content-HASHED and proved equal to base, then RESTAMPS them to THIS wt's
+  //  latest get/post row ts — the plain `status` read stays a pure reader.
+  const force = ambient.force();
   const opts = {};
   if (narrow) opts.underNarrow = narrow;
   if (pins && pins.track) opts.trackPin = pins.track;
+  if (force) opts.wantConfirmed = true;
   const model = quadlib.quadOf(repo, log, k, opts);
+  //  The value is the row ts EXACTLY (`has()` accepts it), never a DIS-057 band
+  //  slot; no wtlog row is appended and nothing is printed.  No get/post row →
+  //  silent no-op.  A recursed sub runs this with its OWN log, so each wt stamps
+  //  to its own row ts (PUT-012).  Idempotent: a stamped mtime is a stamp-set hit
+  //  next run, so it never re-enters `confirmed`.
+  if (force) classify.stampConfirmed(repo, model.confirmed, log.boundaries().pd);
 
   //  BRO-030: an advanced MOUNTED gitlink (subs.classifyMount `adv`) is a
   //  file row whose wt column reads '↑' — a gitlink advance like any file.

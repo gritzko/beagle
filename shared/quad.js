@@ -283,13 +283,18 @@ function quadModel(inp) {
 function quadOf(be, log, k, opts) {
   opts = opts || {};
   const t = tips(be, log, opts);
-  const m = classify.classifyMerge(be, log, k,
-                                   opts.underNarrow ? { underNarrow: opts.underNarrow } : {});
+  //  STATUS-022: `wantConfirmed` rides through to classify (`status!` stamps the
+  //  paths its own classify content-hashed clean); OFF for every other reader.
+  const copts = {};
+  if (opts.underNarrow)   copts.underNarrow = opts.underNarrow;
+  if (opts.wantConfirmed) copts.wantConfirmed = true;
+  const m = classify.classifyMerge(be, log, k, copts);
   const model = quadModel({ k: k, base: t.base, track: t.track, patches: t.patches,
                             wtRows: m.rows });
   //  BRO-030: base-only gitlinks ride along for the status view's adv mapping
   //  (classifyMount is a view concern — the pure model stays sub-blind).
   model.gitlinks = m.gitlinks;
+  model.confirmed = m.confirmed;      // STATUS-022 (undefined unless asked)
   return model;
 }
 
