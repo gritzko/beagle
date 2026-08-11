@@ -67,7 +67,7 @@ jobs:
       - name: Pack tarball
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          NAME="beagle-ext-${TAG}"
+          NAME="beagle-${TAG}"
           git archive --format=tar.gz --prefix="${NAME}/" -o "${NAME}.tar.gz" HEAD
           shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
 
@@ -76,8 +76,8 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
-            beagle-ext-*.tar.gz
-            beagle-ext-*.tar.gz.sha256
+            beagle-*.tar.gz
+            beagle-*.tar.gz.sha256
 
   # JAB-035: build jab from source with this rev packed in as the default jsrc
   # floor and ship it named `be`.  Targets and toolchain mirror jab's own
@@ -153,3 +153,49 @@ jobs:
           files: |
             ${{ matrix.asset }}-*.tar.gz
             ${{ matrix.asset }}-*.tar.gz.sha256
+
+  # JAB-035: the fully static linux x86_64 `be` — musl + static JSCOnly +
+  # embedded slim ICU data + embedded pack.  Runs on ANY Linux (glibc or
+  # musl), zero runtime deps.  The WebKit compile is cached across releases;
+  # a cold run takes ~40 min.  Linux only — no static mac build.
+  static:
+    needs: release
+    runs-on: ubuntu-latest
+    container: alpine:3.22
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Container prerequisites for checkout
+        run: apk add -q git tar
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      # Only the linked archives + API headers are needed on a warm run
+      # (static-be.sh skips the whole WebKit compile when they are present);
+      # ~93 MB vs the 288 MB build tree, far under the 10 GB repo cache cap.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            jsc-build/lib
+            jsc-build/JavaScriptCore/Headers
+          key: jsc-static-2.52.5-alpine3.22
+
+      - name: Build static be
+        run: sh .github/static-be.sh "$PWD/jsc-build" "$PWD/be-bin"
+
+      - name: Pack and upload
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="be-linux-x86_64-static-${TAG}"
+          install -d "dist/${NAME}"
+          install -m 0755 be-bin "dist/${NAME}/be"
+          tar -C dist -czf "${NAME}.tar.gz" "${NAME}"
+          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            be-linux-x86_64-static-*.tar.gz
+            be-linux-x86_64-static-*.tar.gz.sha256
