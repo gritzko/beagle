@@ -12,10 +12,11 @@ on:
 permissions:
   contents: write
 
-# be/ (beagle-ext) ships no binary: the release artifact is a source tarball of
-# the JS dispatch tree (main.js + core/ + verbs/ + views/ + shared/).  We still
-# run the suite first — download the latest `jab`, put it on $PATH, run ctest —
-# and only then pack + attach the tarball.
+# The release attaches the source tarball of the JS dispatch tree (main.js +
+# core/ + verbs/ + views/ + shared/) plus `be` binaries — jab built with this
+# rev packed in as the default jsrc floor (JAB-035), a single executable that
+# works with no checkout.  The `release` job runs the suite and gates the
+# `binaries` matrix (same targets and toolchain as jab's own release).
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -77,3 +78,78 @@ jobs:
           files: |
             beagle-ext-*.tar.gz
             beagle-ext-*.tar.gz.sha256
+
+  # JAB-035: build jab from source with this rev packed in as the default jsrc
+  # floor and ship it named `be`.  Targets and toolchain mirror jab's own
+  # release matrix (ninja; clang on linux).  The pack source is a pristine
+  # `git archive` of the release rev — no .git, no fetched test fixtures.  On
+  # macOS ld ad-hoc-signs the binary and the .incbin pack sits inside the
+  # Mach-O, so the signature covers it — curl/tar installs just run.
+  binaries:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: be-linux-x86_64
+          - os: ubuntu-24.04-arm
+            asset: be-linux-arm64
+          - os: macos-latest
+            asset: be-macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install ninja-build clang \
+            libjavascriptcoregtk-4.1-dev \
+            libsodium-dev libcurl4-gnutls-dev liblz4-dev zlib1g-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja libsodium lz4
+
+      - name: Build be (jab + packed jsrc)
+        run: |
+          git clone --recurse-submodules --depth 1 \
+            https://github.com/gritzko/jab.git jab-src
+          mkdir be-jsrc && git archive HEAD | tar -x -C be-jsrc
+          cmake -S jab-src -B jab-src/build -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            ${{ runner.os == 'Linux' && '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++' || '' }} \
+            -DJAB_JSRC="$PWD/be-jsrc"
+          ninja -C jab-src/build
+          install -m 0755 jab-src/build/bin/jab be-bin
+
+      # A fresh HOME has no jsrc anywhere, so a bareword invocation must
+      # extract the embedded floor to .cache/jsrcs/<hash>/ and load main.js
+      # from it.  An unpacked binary (jab without JAB-035) fails right here.
+      - name: Smoke test the packed be
+        run: |
+          S=$(mktemp -d); W=$(mktemp -d)
+          (cd "$W" && HOME="$S" XDG_CACHE_HOME= \
+            "$GITHUB_WORKSPACE/be-bin" status 2>&1 | head -5) || true
+          find "$S/.cache/jsrcs" -mindepth 1 -maxdepth 1 -type d | grep -q .
+
+      - name: Pack
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="${{ matrix.asset }}-${TAG}"
+          install -d "dist/${NAME}"
+          install -m 0755 be-bin "dist/${NAME}/be"
+          tar -C dist -czf "${NAME}.tar.gz" "${NAME}"
+          shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            ${{ matrix.asset }}-*.tar.gz
+            ${{ matrix.asset }}-*.tar.gz.sha256
