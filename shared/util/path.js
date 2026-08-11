@@ -42,14 +42,27 @@ function basename(p) {
 //  is a relative in-tree path: no absolute leading `/`, no NUL, and every
 //  `/`-split segment is a real name (not ""/"."/".."/".git"/".be"/"..be.idx").
 //  Parity with keeper/WALK name validation; rejects the path-traversal escape.
+//  BE-065: an INDEX SCAN — this is a pure predicate on the crawl's hot path, so
+//  it allocates nothing; only a `.`-leading segment (rare) is ever sliced out.
 function safeRel(rel) {
-  if (typeof rel !== "string" || rel === "" || rel[0] === "/") return false;
-  if (rel.indexOf("\0") >= 0) return false;
-  for (const seg of rel.split("/")) {
-    if (seg === "" || seg === "." || seg === "..") return false;
-    if (seg === ".git" || seg === ".be" || seg === "..be.idx") return false;
+  if (typeof rel !== "string" || rel === "" || rel.charCodeAt(0) === 47) return false;
+  const n = rel.length;
+  let s = 0;
+  for (let i = 0; i <= n; i++) {
+    const c = i === n ? 47 : rel.charCodeAt(i);         // 47 = "/", the seg end
+    if (c === 0) return false;                          // NUL anywhere
+    if (c !== 47) continue;
+    if (i === s) return false;                          // an "" segment
+    if (rel.charCodeAt(s) === 46 && !_okDot(rel.slice(s, i))) return false;
+    s = i + 1;
   }
   return true;
+}
+
+//  The reserved names all start with "." — so only a dotted segment is tested.
+function _okDot(seg) {
+  return seg !== "." && seg !== ".." &&
+         seg !== ".git" && seg !== ".be" && seg !== "..be.idx";
 }
 
 //  --- BE-011: segment-based path calculator (split · resolveInTree · merge) ---
@@ -59,10 +72,16 @@ function safeRel(rel) {
 
 //  split(p) — a "/"-path to its non-empty segments; leading/trailing/doubled
 //  slashes collapse away ("a//b/" → ["a","b"], "/a" → ["a"], "" → []).
+//  BE-065: index scan — the same array out, without the throwaway p.split("/").
 function split(p) {
   if (typeof p !== "string") return [];
-  const out = [];
-  for (const seg of p.split("/")) if (seg !== "") out.push(seg);
+  const out = [], n = p.length;
+  let s = 0;
+  for (let i = 0; i <= n; i++) {
+    if (i !== n && p.charCodeAt(i) !== 47) continue;    // 47 = "/"
+    if (i > s) out.push(p.slice(s, i));
+    s = i + 1;
+  }
   return out;
 }
 

@@ -11,11 +11,13 @@
 "use strict";
 
 //  A full git object id: 40 lowercase-hex characters.
+//  BE-065: charCodeAt, not s[i] — indexing a string allocated a one-char JS
+//  string PER CHARACTER (11.2% of all engine allocations on the pager frame).
 function isFullSha(s) {
-  if (!s || s.length !== 40) return false;
+  if (typeof s !== "string" || s.length !== 40) return false;
   for (let i = 0; i < 40; i++) {
-    const c = s[i];
-    if (!((c >= "0" && c <= "9") || (c >= "a" && c <= "f"))) return false;
+    const c = s.charCodeAt(i);
+    if (!((c >= 48 && c <= 57) || (c >= 97 && c <= 102))) return false;   // 0-9 a-f
   }
   return true;
 }
@@ -24,8 +26,8 @@ function isFullSha(s) {
 //  zero-sha row to "branch absent" (keeper/REFS.c); resolveRef/eachTip
 //  must too, else a `delete` row would resolve to all-zeros.
 function isZeroSha(s) {
-  if (!s || s.length !== 40) return false;
-  for (let i = 0; i < 40; i++) if (s[i] !== "0") return false;
+  if (typeof s !== "string" || s.length !== 40) return false;
+  for (let i = 0; i < 40; i++) if (s.charCodeAt(i) !== 48) return false;   // BE-065
   return true;
 }
 

@@ -220,8 +220,33 @@ function argRel(repo, raw) {
 
 //  BE-030: per-process cache of a wt root → its validated nav context URI, so the
 //  per-fs-access wtpath() below never re-walks the tree (navCwd/treeAt) twice for the
-//  same wt.  "" marks a wt that is repo-less / OUTSIDE work/ (the fallback).
+//  same wt.  null marks a wt that is repo-less / OUTSIDE work/ (the fallback).
+//  BE-065: the entry now holds the PARSED context and the resolved base dir —
+//  `{ c, base }`, base = resolve(c, "") — so a HIT costs no uri._parse and no
+//  resolve_hash walk at all.  Lifetime is per-process, as before.
 const _wtCtx = {};
+
+//  BE-065: is `rel` a path the base+rel join provably resolves the same way as
+//  resolve()?  YES iff it is relative and every "/"-segment is a plain name: no
+//  ""/"."/".." (resolveInTree would normalise or refuse those) and no ":" (which
+//  is the only way _relPath could read a scheme).  Anything else falls back to
+//  the full resolve() — which stays THE resolver ([BE-030]/[URI-016]).
+function _plainRel(rel) {
+  const n = rel.length;
+  if (n === 0 || rel.charCodeAt(0) === 47) return false;   // "" / rooted "/x"
+  let s = 0;
+  for (let i = 0; i <= n; i++) {
+    const c = i === n ? 47 : rel.charCodeAt(i);            // 47 = "/", 46 = ".", 58 = ":"
+    if (c === 58) return false;
+    if (c !== 47) continue;
+    const len = i - s;
+    if (len === 0) return false;                           // "" segment ("a//b", "a/")
+    if (rel.charCodeAt(s) === 46 &&
+        (len === 1 || (len === 2 && rel.charCodeAt(s + 1) === 46))) return false;
+    s = i + 1;
+  }
+  return true;
+}
 
 //  BE-030: wtpath(wt, rel) → the ABSOLUTE fs path of the wt-relative `rel` in the
 //  tree rooted at `wt`, computed THROUGH resolve() so every worktree file access
@@ -235,18 +260,25 @@ const _wtCtx = {};
 //  outside work/ (a store edge / scratch dir) has no `//name` address → the
 //  plain wtJoin confine is used (byte-identical to the pre-BE-030 behavior).
 function wtpath(wt, rel) {
-  let ctx = _wtCtx[wt];
-  if (ctx === undefined) {
-    ctx = navCwd(wt) || "";
+  let m = _wtCtx[wt];
+  if (m === undefined) {
+    const ctx = navCwd(wt) || "";
+    m = null;
     if (ctx) {                                        // the context must reproduce wt
       const c = uri._parse(ctx);
-      try { if (resolve(c, "") !== wt) ctx = ""; } catch (e) { ctx = ""; }
+      //  BE-065: resolve(c,"") is the memoised BASE DIR — computed ONCE, through
+      //  resolve_hash, and kept only when it reproduces `wt` (so base === wt).
+      try { const b = resolve(c, ""); if (b === wt) m = { c: c, base: b }; } catch (e) {}
     }
-    _wtCtx[wt] = ctx;
+    _wtCtx[wt] = m;
   }
-  if (!ctx) return pathlib.wtJoin(wt, rel);           // outside work/ → plain confine
-  const c = uri._parse(ctx);
-  const abs = resolve(c, rel || "");                  // resolve-backed, context-honoured
+  if (!m) return pathlib.wtJoin(wt, rel);             // outside work/ → plain confine
+  //  BE-065 fast path: base + "/" + rel.  base === wt and every segment is a plain
+  //  name, so this IS resolve()'s answer and the wt boundary below holds by
+  //  construction.  Empty rel is the base itself (resolve(c,"") memoised).
+  if (rel === undefined || rel === null || rel === "") return m.base;
+  if (typeof rel === "string" && _plainRel(rel)) return m.base + "/" + rel;
+  const abs = resolve(m.c, rel || "");                // resolve-backed, context-honoured
   //  keep wtJoin's WT-level boundary: resolve() confines to the TREE (for a
   //  submodule that is the parent tree), so refuse a path that climbs OUT of `wt`.
   if (abs !== wt && abs.indexOf(wt + "/") !== 0)
