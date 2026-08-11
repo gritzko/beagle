@@ -84,7 +84,15 @@ function stop() {
   if (S.wfd >= 0) { try { fsw.close(S.wfd); } catch (e) {} }
   S.wfd = -1;
   S.spot = null; S.wdOf = null; S.dirOf = null; S.armed = null; S.seen = null;
-  S.drainBuf = null; S.walk = null;
+  S.drainBuf = null; dropWalk();
+}
+
+//  STATUS-020: the published slot OWNS its matcher's open `.gitignore` maps —
+//  clearing the slot without a take must release them, never just drop them.
+function dropWalk() {
+  const s = S.walk;
+  S.walk = null;
+  if (s && s.ig) s.ig.close();
 }
 
 //  STATUS-019: THE stamp — one increment of the shared counter, applied to the
@@ -228,6 +236,7 @@ function arm(wt) {
   //  a 10.6 s cold board).  ONE slot: the take below is the next thing to run.
   //  BE-064: the MATCHER that produced the walk rides with it — classifyMerge
   //  re-loaded it for the same root microseconds later (151 of 355 loads).
+  dropWalk();                                        // STATUS-020: free a stale slot
   S.walk = { wt: wt, rev: S.spot[wt], w: w, ig: ignore };
 }
 
@@ -236,7 +245,9 @@ function arm(wt) {
 //  slot, a moved spot: wtWalk above walks it itself.  CODE-030: internal now.
 function takeWalk(wt) {
   const a = takeArm(wt);
-  return a ? a.w : null;
+  if (!a) return null;
+  a.ig.close();          // STATUS-020: this caller wants the walk half only
+  return a.w;
 }
 
 //  BE-064: THE take, for BOTH halves — the walk and the matcher it was walked
@@ -245,7 +256,9 @@ function takeArm(wt) {
   const s = S.walk;
   if (!live() || !s || s.wt !== wt) return null;
   S.walk = null;
-  return s.rev === S.spot[wt] ? { w: s.w, ig: s.ig } : null;
+  if (s.rev === S.spot[wt]) return { w: s.w, ig: s.ig };
+  s.ig.close();          // STATUS-020: stale walk, and with it its matcher
+  return null;
 }
 
 //  THE query.  No watcher, or a dir that could not be armed → a FRESH TOKEN, so

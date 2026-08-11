@@ -1135,7 +1135,9 @@ function sweepOldTree(g, rel, treeSha, out) {
 function sweepUntracked(g, newTree, out) {
   const tracked = {};
   g.k.readTreeRecursive(newTree, function (l) { tracked[l.path] = 1; });
-  const scan = classify.wtScan(g.wt, ignorelib.load(g.wt));
+  const ignore = ignorelib.load(g.wt);
+  const scan = classify.wtScan(g.wt, ignore);
+  ignore.close();     // STATUS-020: last `.gitignore` use — release the maps
   for (const rel in scan) {
     if (tracked[rel]) continue;
     try { io.unlink(wtpath(g.wt, rel)); out.row(rel, "del", g.ts); g.dels++;

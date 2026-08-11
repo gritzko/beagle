@@ -56,6 +56,10 @@ ar rcs libicudata-slim.a icudt_dat.o
 cd "$SRC"
 
 # --- 3. jab, static, with the be pack ---------------------------------------
+# The checkout is owned by the runner uid, we run as container root: git would
+# refuse `git archive` with "dubious ownership" (actions/checkout wrote its
+# safe.directory exception into a temp HOME this shell never sees).
+git config --global --add safe.directory "$SRC"
 git clone -q --recurse-submodules --depth 1 https://github.com/gritzko/jab.git jab-src
 mkdir -p be-jsrc
 git archive HEAD | tar -x -C be-jsrc

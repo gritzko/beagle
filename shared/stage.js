@@ -127,6 +127,7 @@ function prep(be, wtlogReader, storeReader) {
   function isGpStamp(tsRon) { return !!gpStamp[tsRon]; }
 
   const wt = wtScan(wtRoot, ignore);   // rel → { ts, kind, full }
+  ignore.close();     // STATUS-020: last `.gitignore` use — release the maps
 
   const engine = {
     be: be, wtRoot: wtRoot, base: base, wt: wt,

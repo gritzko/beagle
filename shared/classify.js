@@ -286,7 +286,7 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   //  2. wt scan ulog: rel → { ts, kind }.  BE-064: over the arming walk when
   //  there was one — wtScan taking the slot itself is now this take.
   const wt = wtScan(wtRoot, ignore, armed ? armed.w : null);
-
+  ignore.close();     // STATUS-020: last `.gitignore` use — release the maps
   //  3. put list ulog: staged put/del since the pd floor.  A move-form put
   //  carries a dest path in the fragment; a 40-hex fragment is a gitlink pin.
   const puts = {}, dels = {};
@@ -661,6 +661,7 @@ function classifyDir(be, wtlogReader, keeperReader, scopePfx) {
     else if (st.kind === "lnk") wtFile[nm] = { ts: st.mtime || 0n, kind: "l" };
     else if (st.kind === "reg") wtFile[nm] = { ts: st.mtime || 0n, kind: (st.mode && (st.mode & 0o111)) ? "x" : "f" };
   }
+  ignore.close();     // STATUS-020: last `.gitignore` use — release the maps
 
   //  3. staged put/del since the last post.  movDsts collects EVERY move's dst
   //  (a dst may be immediate even when its src is not), so an immediate wt-only
