@@ -144,15 +144,25 @@ function parseSlots(args) {
       if (a.indexOf("?") >= 0) { slots.hasQuery = true; slots.query = u.query || ""; }
       continue;
     }
+    //  DIS-062: a SCHEME-LESS authority is a LOCAL WORKTREE target (an
+    //  explicit `//X[/sub]` operand, once loop.js's authorityRepo lets it
+    //  through intact) — not a wire push; only ssh/https are Host below.
+    //  POST-038: the discriminator is the authority slot being PRESENT, not a
+    //  non-empty host — `///X[/sub]/` (host "", the main-tree sub) is one too.
+    if (u.authority !== undefined && !u.scheme) {
+      //  POST-038: a bare `//`/`///` carries the authority but names no tree
+      //  (no host, no path segment) — say so, never target the root blind.
+      if (!u.host && !(u.path || "").split("/").filter(Boolean).length)
+        throw "`" + a + "` names no worktree — say `//name` or `///sub`";
+      //  POST-038: a `#` on a wt target resolves as a HASH (HASHNONE on a
+      //  message); the advance always goes to cur's tip — say that instead.
+      if (u.fragment !== undefined)
+        throw "post `#` to a worktree target is not supported (it FFs to cur)";
+      slots.wt = true;
+      slots.wtUri = a;
+      continue;
+    }
     if (u.host) {
-      //  DIS-062: a SCHEME-LESS authority is a LOCAL WORKTREE target (an
-      //  explicit `//X[/sub]` operand, once loop.js's authorityRepo lets it
-      //  through intact) — not a wire push; only ssh/https are Host below.
-      if (!u.scheme) {
-        slots.wt = true;
-        slots.wtUri = a;
-        continue;
-      }
       //  GIT-013: a Host slot is a wire PUSH target (`ssh://host?br`,
       //  `https://host?br`).  Capture the raw URI + its branch query for postOne.
       slots.host = true;
@@ -610,6 +620,7 @@ function post() {
 }
 post.jab = "args";
 post._pushRemote = pushRemote;   // JS-100: test hook (child-leak repro)
+post._parseSlots = parseSlots;   // POST-038: test hook (slot routing)
 module.exports = post;
 
 //  postTree(info, ctx, row): recurse mounted subs (post-order), then postOne.
