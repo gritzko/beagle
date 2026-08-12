@@ -172,10 +172,21 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      # actions/checkout writes its safe.directory exception into a temporary
+      # HOME the container shell never sees; we run as container root, so any
+      # git command against the runner-owned checkout (git archive in
+      # static-be.sh) dies with "dubious ownership".  Fixed here as well as in
+      # static-be.sh so that dispatching a pre-fix tag still builds.
+      - name: Mark checkout safe for container git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       # Only the linked archives + API headers are needed on a warm run
       # (static-be.sh skips the whole WebKit compile when they are present);
       # ~93 MB vs the 288 MB build tree, far under the 10 GB repo cache cap.
-      - uses: actions/cache@v4
+      # restore/save split instead of actions/cache: the combined action skips
+      # its save when the job fails, which cost a full 40-min JSC recompile on
+      # every red run — save unconditionally once the archives exist.
+      - uses: actions/cache/restore@v4
         with:
           path: |
             jsc-build/lib
@@ -184,6 +195,14 @@ jobs:
 
       - name: Build static be
         run: sh .github/static-be.sh "$PWD/jsc-build" "$PWD/be-bin"
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            jsc-build/lib
+            jsc-build/JavaScriptCore/Headers
+          key: jsc-static-2.52.5-alpine3.22
 
       - name: Pack and upload
         run: |
