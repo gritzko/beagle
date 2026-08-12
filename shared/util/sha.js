@@ -7,6 +7,7 @@
 //    isFullSha(s)             → true iff s is exactly 40 lowercase-hex chars
 //    hashlet60FromBytes(sha)  → the MS 60 bits of a 20-byte sha (BigInt)
 //    frameSha(typeName, body) → the git loose-object sha-1 of body (40-hex)
+//    blobShaOfFd(fd, size)    → the same, read straight into a shared scratch
 
 "use strict";
 
@@ -52,6 +53,33 @@ function frameSha(typeName, content) {
   return hex.encode(sha1(buf.data()));
 }
 
+//  STATUS-021: the content sweep's blob sha — ONE module-level io.ram
+//  scratch (anonymous mmap, pages fault in lazily), so a hashed file costs
+//  no buffer alloc and ONE copy (the read).  256 MiB of virtual space.
+const _SCRATCH_CAP = 1 << 28;
+let _scratch = null;
+
+//  blobShaOfFd(fd, size) → frameSha("blob", <the fd's `size` bytes>) without
+//  materialising them: "blob <size>\0" is feedStr-ed into the scratch and the
+//  file is read in right after it, sha1 over the no-copy data() view.  A short
+//  read (the file shrank under us) re-frames the bytes we got — same answer as
+//  the two-buffer path, which sized its header from what it actually read.
+function blobShaOfFd(fd, size) {
+  const hdr = "blob " + size + "\0";                 // ASCII: chars == bytes
+  if (hdr.length + size > _SCRATCH_CAP) {           // pathological giant file
+    const b1 = io.buf(size + 16);
+    io.readAll(fd, b1);
+    return frameSha("blob", b1.data());
+  }
+  const b = _scratch === null ? (_scratch = io.ram(_SCRATCH_CAP)) : _scratch;
+  b.reset();
+  b.feedStr(hdr);
+  const n = size === 0 ? 0 : io.readAll(fd, b.idle().subarray(0, size));
+  b.fed(n);
+  if (n !== size) return frameSha("blob", b.data().subarray(hdr.length));
+  return hex.encode(sha1(b.data()));
+}
+
 module.exports = { isFullSha: isFullSha, isZeroSha: isZeroSha,
                    hashlet60FromBytes: hashlet60FromBytes,
-                   frameSha: frameSha };
+                   frameSha: frameSha, blobShaOfFd: blobShaOfFd };

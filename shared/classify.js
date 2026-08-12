@@ -166,12 +166,13 @@ function wtBlobSha(wtRoot, rel) {
       //  no such ceiling — the fd is closed each call.
       let fd;
       try { fd = io.open(full, "r"); } catch (e) { return undefined; }
-      try {
-        const b = io.buf(st.size + 16);
-        io.readAll(fd, b, st.size);
-        content = b.data();
-      } catch (e) { try { io.close(fd); } catch (e2) {} return undefined; }
+      //  STATUS-021: read into the shared grow-only scratch, behind the
+      //  "blob <size>\0" header — no per-file buf, no second copy.
+      let sha;
+      try { sha = shalib.blobShaOfFd(fd, st.size); }
+      catch (e) { try { io.close(fd); } catch (e2) {} return undefined; }
       try { io.close(fd); } catch (e) {}
+      return sha;
     }
   } else return undefined;
   return shalib.frameSha("blob", content);
